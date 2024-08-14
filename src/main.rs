@@ -547,7 +547,7 @@ impl Constraint<2> for CosseratBendTwist {
         let torque =
             -self.length * self.darboux_gradient_ang(p).transpose() * self.bend_twist() * darboux; // TODO: Finish.
         [
-            Split::from_angular(pi.rotation_map().transpose() * torque),
+            -Split::from_angular(pi.rotation_map().transpose() * torque),
             Split::from_angular(pj.rotation_map().transpose() * torque),
         ]
     }
@@ -589,10 +589,10 @@ async fn main() {
         .into_iter()
         .map(Split::from_linear)
         .collect();
-    let mut velocity: Vec<Velocity> = vec![vector![0.1, 0.0, 0.0], vector![-0.1, 0.0, 0.0]]
-        .into_iter()
-        .map(Split::from_linear)
-        .collect();
+    let mut velocity: Vec<Velocity> = vec![
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.1, 0.0, 0.0]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![-0.1, 0.0, 0.0]),
+    ];
     let mass: Vec<Mass> = vec![1.0, 1.0]
         .into_iter()
         .map(|x| Split::new(x, Mat3::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
@@ -716,10 +716,10 @@ async fn main() {
                 draw_circle(pos.x, pos.y, 0.5 * scaling, RED);
                 let rot_x = (position[i].angular * vector![0.5, 0.0, 0.0]).xy() * scaling + pos;
                 draw_line(pos.x, pos.y, rot_x.x, rot_x.y, 3.0, WHITE);
-                let rot_z = (position[i].angular * vector![0.0, 0.0, 0.5]).xy() * scaling + pos;
-                draw_line(pos.x, pos.y, rot_z.x, rot_z.y, 3.0, BLUE);
                 let rot_y = (position[i].angular * vector![0.0, 0.5, 0.0]).xy() * scaling + pos;
                 draw_line(pos.x, pos.y, rot_y.x, rot_y.y, 3.0, GREEN);
+                let rot_z = (position[i].angular * vector![0.0, 0.0, 0.5]).xy() * scaling + pos;
+                draw_line(pos.x, pos.y, rot_z.x, rot_z.y, 3.0, BLUE);
             }
             macroquad::window::next_frame().await
         }
