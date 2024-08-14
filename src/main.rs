@@ -484,10 +484,10 @@ impl Constraint<2> for CosseratStretchShear {
         let force =
             -self.length * self.strain_gradient_lin(p).transpose() * self.stretch_shear() * strain;
         let torque =
-            -self.length * self.strain_gradient_ang(p).transpose() * self.stretch_shear() * strain; // TODO: Finish.
+            -self.length * self.strain_gradient_ang(p).transpose() * self.stretch_shear() * strain;
         [
             Split::new(force, pi.rotation_map().transpose() * torque),
-            -Split::new(force, pj.rotation_map().transpose() * torque),
+            Split::new(-force, pj.rotation_map().transpose() * torque),
         ]
     }
     fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
@@ -548,7 +548,7 @@ impl Constraint<2> for CosseratBendTwist {
             -self.length * self.darboux_gradient_ang(p).transpose() * self.bend_twist() * darboux; // TODO: Finish.
         [
             Split::from_angular(pi.rotation_map().transpose() * torque),
-            -Split::from_angular(pj.rotation_map().transpose() * torque),
+            Split::from_angular(pj.rotation_map().transpose() * torque),
         ]
     }
     fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
@@ -583,17 +583,17 @@ struct Constraint2 {
     constraint: Box<dyn Constraint<2>>,
 }
 
-#[macroquad::main("main")]
+#[macroquad::main("Pbd")]
 async fn main() {
     let mut position: Vec<Position> = vec![vector![0.0, 0.0, 0.0], vector![2.0, 0.0, 0.0]]
         .into_iter()
         .map(Split::from_linear)
         .collect();
-    let mut velocity: Vec<Velocity> = vec![vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]]
+    let mut velocity: Vec<Velocity> = vec![vector![0.1, 0.0, 0.0], vector![-0.1, 0.0, 0.0]]
         .into_iter()
         .map(Split::from_linear)
         .collect();
-    let mass: Vec<Mass> = vec![5.0, 1.0]
+    let mass: Vec<Mass> = vec![1.0, 1.0]
         .into_iter()
         .map(|x| Split::new(x, Mat3::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
         .collect();
@@ -614,10 +614,10 @@ async fn main() {
     );
 
     let constraints = [
-        // Constraint2 {
-        //     targets: [0, 1],
-        //     constraint: Box::new(bt),
-        // },
+        Constraint2 {
+            targets: [0, 1],
+            constraint: Box::new(bt),
+        },
         Constraint2 {
             targets: [0, 1],
             constraint: Box::new(se),
@@ -639,22 +639,22 @@ async fn main() {
 
             let mut contacts: Vec<Constraint2> = vec![];
 
-            // for i in 0..particles {
-            //     for j in i + 1..particles {
-            //         let pi = position[i];
-            //         let pj = position[j];
-            //         if (pi.linear - pj.linear).norm() <= 1.0 {
-            //             contacts.push(Constraint2 {
-            //                 targets: [i, j],
-            //                 constraint: Box::new(Contact {
-            //                     normal: (pi.linear - pj.linear).normalize(),
-            //                     stiffness: 10000.0,
-            //                     length: 1.0,
-            //                 }),
-            //             });
-            //         }
-            //     }
-            // }
+            for i in 0..particles {
+                for j in i + 1..particles {
+                    let pi = position[i];
+                    let pj = position[j];
+                    if (pi.linear - pj.linear).norm() <= 1.0 {
+                        contacts.push(Constraint2 {
+                            targets: [i, j],
+                            constraint: Box::new(Contact {
+                                normal: (pi.linear - pj.linear).normalize(),
+                                stiffness: 10000.0,
+                                length: 1.0,
+                            }),
+                        });
+                    }
+                }
+            }
             for _iter in 0..1 {
                 let mut forces = vec![Force::default(); particles];
                 let mut grad2_diag = vec![Split::<Vec3, Vec3>::default(); particles];
@@ -669,8 +669,9 @@ async fn main() {
                     let pj = position[j];
                     let p = [pi, pj];
                     let force = constraint.force(p);
-                    println!("Force: {:?}", force);
+                    // println!("Force: {:?}", force);
                     let grad2 = constraint.grad2_diag(p);
+                    // println!("Gradient: {:?}", grad2);
                     forces[i] += force[0];
                     forces[j] += force[1];
                     grad2_diag[i] += grad2[0];
@@ -686,6 +687,7 @@ async fn main() {
                 let gradient = (0..particles)
                     .map(|i| mass[i] * (velocity[i] - last_velocity[i]) - forces[i])
                     .collect::<Vec<_>>();
+                // println!("Gradient: {:?}", gradient);
                 for i in 0..particles {
                     let step = Split {
                         linear: preconditioner_diag[i]
@@ -695,6 +697,7 @@ async fn main() {
                             .angular
                             .component_mul(&gradient[i].angular),
                     };
+                    // println!("Step: {:?}", step);
                     velocity[i] -= constraint_step * step;
                 }
                 for i in 0..particles {
@@ -705,14 +708,18 @@ async fn main() {
         {
             use macroquad::prelude::*;
             let scaling = 50.0;
-            let offset = vector![100.0, 100.0];
+            let offset = vector![200.0, 200.0];
 
             clear_background(BLACK);
             for i in 0..particles {
                 let pos = position[i].linear.xy() * scaling + offset;
                 draw_circle(pos.x, pos.y, 0.5 * scaling, RED);
-                let rot = (position[i].angular * vector![0.5, 0.0, 0.0]).xy() * scaling;
-                draw_line(pos.x, pos.y, pos.x + rot.x, pos.y + rot.y, 3.0, WHITE);
+                let rot_x = (position[i].angular * vector![0.5, 0.0, 0.0]).xy() * scaling + pos;
+                draw_line(pos.x, pos.y, rot_x.x, rot_x.y, 3.0, WHITE);
+                let rot_z = (position[i].angular * vector![0.0, 0.0, 0.5]).xy() * scaling + pos;
+                draw_line(pos.x, pos.y, rot_z.x, rot_z.y, 3.0, BLUE);
+                let rot_y = (position[i].angular * vector![0.0, 0.5, 0.0]).xy() * scaling + pos;
+                draw_line(pos.x, pos.y, rot_y.x, rot_y.y, 3.0, GREEN);
             }
             macroquad::window::next_frame().await
         }
