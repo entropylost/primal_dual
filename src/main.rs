@@ -1,4 +1,7 @@
-use nalgebra::{self as na, matrix, stack, vector};
+use macroquad::input::KeyCode;
+use nalgebra::{self as na, matrix, stack, vector, SMatrix};
+use std::fmt::Debug;
+use std::ops::{AddAssign, Div, DivAssign, MulAssign, SubAssign};
 use std::{
     f32::consts::PI,
     ops::{Add, Deref, Mul, Neg, Sub},
@@ -103,6 +106,95 @@ where
         }
     }
 }
+impl<A, B, C, D> Div<Split<C, D>> for Split<A, B>
+where
+    A: Div<C>,
+    B: Div<D>,
+{
+    type Output = Split<A::Output, B::Output>;
+    fn div(self, rhs: Split<C, D>) -> Self::Output {
+        Split {
+            linear: self.linear / rhs.linear,
+            angular: self.angular / rhs.angular,
+        }
+    }
+}
+
+impl<A, B> AddAssign<Self> for Split<A, B>
+where
+    A: AddAssign<A>,
+    B: AddAssign<B>,
+{
+    fn add_assign(&mut self, rhs: Self) {
+        self.linear += rhs.linear;
+        self.angular += rhs.angular;
+    }
+}
+impl<A, B> SubAssign<Self> for Split<A, B>
+where
+    A: SubAssign<A>,
+    B: SubAssign<B>,
+{
+    fn sub_assign(&mut self, rhs: Self) {
+        self.linear -= rhs.linear;
+        self.angular -= rhs.angular;
+    }
+}
+
+impl<A, B> MulAssign<Self> for Split<A, B>
+where
+    A: MulAssign<A>,
+    B: MulAssign<B>,
+{
+    fn mul_assign(&mut self, rhs: Self) {
+        self.linear *= rhs.linear;
+        self.angular *= rhs.angular;
+    }
+}
+impl<A, B> DivAssign<Self> for Split<A, B>
+where
+    A: DivAssign<A>,
+    B: DivAssign<B>,
+{
+    fn div_assign(&mut self, rhs: Self) {
+        self.linear /= rhs.linear;
+        self.angular /= rhs.angular;
+    }
+}
+
+impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize> Mul<f32>
+    for Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>
+{
+    type Output = Self;
+    fn mul(self, rhs: f32) -> Self {
+        Self {
+            linear: self.linear * rhs,
+            angular: self.angular * rhs,
+        }
+    }
+}
+impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize> Div<f32>
+    for Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>
+{
+    type Output = Self;
+    fn div(self, rhs: f32) -> Self {
+        Self {
+            linear: self.linear / rhs,
+            angular: self.angular / rhs,
+        }
+    }
+}
+impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
+    Mul<Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>> for f32
+{
+    type Output = Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>;
+    fn mul(self, rhs: Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>) -> Self::Output {
+        Split {
+            linear: self * rhs.linear,
+            angular: self * rhs.angular,
+        }
+    }
+}
 
 type Position = Split<Vec3, UQuat>;
 type Displacement = Split<Vec3, Quat>;
@@ -131,12 +223,30 @@ impl Position {
             angular: (Quat::from_imag(velocity.angular) * *self.angular) / 2.0,
         }
     }
+    fn unconstrain(self) -> Displacement {
+        Displacement {
+            linear: self.linear,
+            angular: *self.angular,
+        }
+    }
+    fn step(self, velocity: Velocity) -> Self {
+        (self.map_velocity(velocity) + self.unconstrain()).normalize()
+    }
+}
+impl Displacement {
+    fn normalize(self) -> Position {
+        Position {
+            linear: self.linear,
+            angular: UQuat::from_quaternion(self.angular),
+        }
+    }
 }
 
-trait Constraint<const N: usize> {
+trait Constraint<const N: usize>: Debug {
     fn potential(&self, positions: [Position; N]) -> f32;
     fn force(&self, positions: [Position; N]) -> [Force; N];
-    fn diag_grad2(&self, positions: [Position; N]) -> [Split<Vec3, Vec3>; N];
+    fn grad2_diag(&self, positions: [Position; N]) -> [Split<Vec3, Vec3>; N];
+    // Add dual properties. Require indexing into a set of dual vectors or something.
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -157,7 +267,7 @@ impl Constraint<2> for Rod {
             Split::from_linear(value * self.normal),
         ]
     }
-    fn diag_grad2(&self, _p: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
+    fn grad2_diag(&self, _p: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
         [Split::from_linear((self.normal * self.stiffness * self.normal.transpose()).diagonal()); 2]
     }
 }
@@ -180,7 +290,7 @@ impl Constraint<2> for Contact {
             Split::from_linear(value * self.normal),
         ]
     }
-    fn diag_grad2(&self, p: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
+    fn grad2_diag(&self, p: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
         if self.potential(p) < 0.0 {
             [Split::from_linear(
                 (self.normal * self.stiffness * self.normal.transpose()).diagonal(),
@@ -209,7 +319,7 @@ impl Constraint<2> for RadialContact {
             Split::from_linear(value * normal),
         ]
     }
-    fn diag_grad2(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
+    fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
         let normal = (pi.linear - pj.linear).normalize();
 
         if self.potential(p) < 0.0 {
@@ -341,7 +451,7 @@ impl Constraint<2> for CosseratStretchShear {
             -Split::new(force, pj.rotation_map().transpose() * torque),
         ]
     }
-    fn diag_grad2(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
+    fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
         let lin = self.strain_gradient_lin(p);
         let ang = self.strain_gradient_ang(p);
         let jacobian_i = Split::new(lin, ang * pi.rotation_map());
@@ -402,7 +512,7 @@ impl Constraint<2> for CosseratBendTwist {
             -Split::from_angular(pj.rotation_map().transpose() * torque),
         ]
     }
-    fn diag_grad2(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
+    fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
         let ang = self.darboux_gradient_ang(p);
         let jacobian_i = ang * pi.rotation_map();
         let diag_i = jacobian_i.transpose() * self.bend_twist() * jacobian_i;
@@ -428,102 +538,124 @@ impl Particles {
     }
 }
 
+#[derive(Debug)]
+struct Constraint2 {
+    targets: [usize; 2],
+    constraint: Box<dyn Constraint<2>>,
+}
+
 #[macroquad::main("main")]
 async fn main() {
-    use macroquad::prelude::*;
-    let scaling = 50.0;
-
-    let mut particles = Particles {
-        position: vec![
-            vec2(0.0, 0.0),
-            vec2(4.0, 0.0),
-            vec2(6.0, 0.0),
-            vec2(7.0, 0.0),
-        ],
-        last_position: vec![vec2(0.0, 0.0); 4],
-        velocity: vec![
-            vec2(0.1, 0.0),
-            vec2(0.0, 0.0),
-            vec2(0.0, 0.0),
-            vec2(0.0, 0.0),
-        ],
-        last_velocity: vec![vec2(0.0, 0.0); 4],
-        mass: vec![1.0, 1.0, 1.0, 1.0],
-    };
+    let mut position: Vec<Position> = vec![vector![0.0, 0.0, 0.0], vector![2.0, 0.0, 0.0]]
+        .into_iter()
+        .map(Split::from_linear)
+        .collect();
+    let mut last_position = position.clone();
+    let mut velocity: Vec<Velocity> = vec![vector![0.1, 0.0, 0.0], vector![0.0, 0.0, 0.0]]
+        .into_iter()
+        .map(Split::from_linear)
+        .collect();
+    let mut last_velocity = velocity.clone();
+    let mass: Vec<Mass> = vec![5.0, 1.0]
+        .into_iter()
+        .map(|x| Split::new(x, Mat3::from_diagonal_element(x)))
+        .collect();
+    let particles = position.len();
+    assert_eq!(particles, velocity.len());
+    assert_eq!(particles, mass.len());
 
     let constraint_step = 0.1;
 
     loop {
-        let offset = vec2(100.0, 100.0);
-        clear_background(BLACK);
+        let running = macroquad::input::is_key_pressed(KeyCode::Period)
+            || macroquad::input::is_key_down(KeyCode::Space);
 
-        if is_key_pressed(KeyCode::Period) || is_key_down(KeyCode::Space) {
-            particles.last_position = particles.position.clone();
-            particles.last_velocity = particles.velocity.clone();
-            for i in 0..particles.len() {
-                particles.position[i] += particles.velocity[i];
+        if running {
+            last_position = position.clone();
+            last_velocity = velocity.clone();
+            for i in 0..particles {
+                position[i] = position[i].step(velocity[i]);
             }
 
-            let mut contacts = vec![];
+            let mut constraints: Vec<Constraint2> = vec![];
 
-            for i in 0..particles.len() {
-                for j in i + 1..particles.len() {
-                    let pi = particles.position[i];
-                    let pj = particles.position[j];
-                    if pi.distance(pj) <= 1.0 {
-                        contacts.push(Contact {
-                            colliders: (i, j),
-                            normal: (pi - pj).normalize(),
-                            stiffness: 10000.0,
+            for i in 0..particles {
+                for j in i + 1..particles {
+                    let pi = position[i];
+                    let pj = position[j];
+                    if (pi.linear - pj.linear).norm() <= 1.0 {
+                        constraints.push(Constraint2 {
+                            targets: [i, j],
+                            constraint: Box::new(Contact {
+                                normal: (pi.linear - pj.linear).normalize(),
+                                stiffness: 10000.0,
+                                length: 1.0,
+                            }),
                         });
                     }
                 }
             }
             for _iter in 0..100 {
-                let mut forces = vec![Vec2::ZERO; particles.len()];
-                let mut jacobian_diag = vec![Vec2::ZERO; particles.len()];
+                let mut forces = vec![Force::default(); particles];
+                let mut grad2_diag = vec![Split::<Vec3, Vec3>::default(); particles];
 
-                for &Contact {
-                    colliders: (i, j),
-                    normal,
-                    stiffness,
-                } in &contacts
+                for Constraint2 {
+                    targets,
+                    constraint,
+                } in &constraints
                 {
-                    let pi = particles.position[i];
-                    let pj = particles.position[j];
-                    let constraint = (pi - pj).dot(normal) - 1.0;
-                    let force = normal * stiffness * constraint.min(0.0);
-                    forces[i] -= force;
-                    forces[j] += force;
-                    jacobian_diag[i] += normal * normal * stiffness;
-                    jacobian_diag[j] += normal * normal * stiffness;
+                    let [i, j] = *targets;
+                    let pi = position[i];
+                    let pj = position[j];
+                    let p = [pi, pj];
+                    let force = constraint.force(p);
+                    let grad2 = constraint.grad2_diag(p);
+                    forces[i] += force[0];
+                    forces[j] += force[1];
+                    grad2_diag[i] += grad2[0];
+                    grad2_diag[j] += grad2[1];
                 }
-                let mut preconditioner_diag = vec![Vec2::ZERO; particles.len()];
-                for i in 0..particles.len() {
-                    preconditioner_diag[i] = 1.0 / (particles.mass[i] + jacobian_diag[i])
+                let mut preconditioner_diag = vec![Split::<Vec3, Vec3>::default(); particles];
+                for i in 0..particles {
+                    preconditioner_diag[i].linear =
+                        (Vec3::repeat(mass[i].linear) + grad2_diag[i].linear).map(|x| 1.0 / x);
+                    preconditioner_diag[i].angular =
+                        (mass[i].angular.diagonal() + grad2_diag[i].angular).map(|x| 1.0 / x);
                 }
-                let gradient = (0..particles.len())
-                    .map(|i| {
-                        particles.mass[i] * (particles.velocity[i] - particles.last_velocity[i])
-                            - forces[i]
-                    })
+                let gradient = (0..particles)
+                    .map(|i| mass[i] * (velocity[i] - last_velocity[i]) - forces[i])
                     .collect::<Vec<_>>();
-                for i in 0..particles.len() {
-                    particles.velocity[i] -= constraint_step * preconditioner_diag[i] * gradient[i];
+                for i in 0..particles {
+                    let step = Split {
+                        linear: preconditioner_diag[i]
+                            .linear
+                            .component_mul(&gradient[i].linear),
+                        angular: preconditioner_diag[i]
+                            .angular
+                            .component_mul(&gradient[i].angular),
+                    };
+                    velocity[i] -= constraint_step * step;
                 }
-                for i in 0..particles.len() {
-                    particles.position[i] = particles.velocity[i] + particles.last_position[i];
+                for i in 0..particles {
+                    position[i] = last_position[i].step(velocity[i]);
                 }
             }
         }
-        for i in 0..particles.len() {
-            draw_circle(
-                particles.position[i].x * scaling + offset.x,
-                particles.position[i].y * scaling + offset.x,
-                0.5 * scaling,
-                RED,
-            );
+        {
+            use macroquad::prelude::*;
+            let scaling = 50.0;
+            let offset = vec2(100.0, 100.0);
+
+            clear_background(BLACK);
+            for i in 0..particles {
+                draw_circle(
+                    position[i].linear.x * scaling + offset.x,
+                    position[i].linear.y * scaling + offset.x,
+                    0.5 * scaling,
+                    RED,
+                );
+            }
+            macroquad::window::next_frame().await
         }
-        next_frame().await
     }
 }
