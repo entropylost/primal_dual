@@ -7,11 +7,9 @@ use nalgebra::{self as na, matrix, stack, vector, SMatrix};
 use std::fmt::Debug;
 use std::ops::{AddAssign, Div, DivAssign, MulAssign, SubAssign};
 use std::{
-    f64::consts::PI,
+    f32::consts::PI,
     ops::{Add, Deref, Mul, Neg, Sub},
 };
-
-type f32 = f64;
 
 type Vec3 = na::Vector3<f32>;
 type RVec3 = na::RowVector3<f32>;
@@ -529,17 +527,6 @@ impl CosseratBendTwist {
     }
     fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Mat3x4 {
         let dqij = self.center_rotation_gradient(p);
-        println!("Dqij: {}", dqij);
-        println!(
-            "RMat: {}",
-            rmul_mat(*pj.angular - *pi.angular)
-                * Mat4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
-                * dqij
-        );
-        println!(
-            "Center_mat: {}",
-            lmul_mat(*self.center_rotation(p).conjugate())
-        );
         let gradient = 2.0 / self.length
             * (1.0 / 2.0
                 * rmul_mat(*pj.angular - *pi.angular)
@@ -557,62 +544,26 @@ impl Constraint<2> for CosseratBendTwist {
     }
     fn force(&self, p @ [pi, pj]: [Position; 2]) -> [Force; 2] {
         let darboux = self.darboux_vector(p);
-        let torque =
+        let torque_i =
             -self.length * self.darboux_gradient_ang(p).transpose() * self.bend_twist() * darboux;
-        println!("Torque: {:?}", torque);
+        let torque_j = -self.length
+            * self.darboux_gradient_ang([pj, pi]).transpose()
+            * self.bend_twist()
+            * -darboux;
         [
-            Split::from_angular(pi.rotation_map().transpose() * torque),
-            -Split::from_angular(pj.rotation_map().transpose() * torque),
+            Split::from_angular(pi.rotation_map().transpose() * torque_i),
+            Split::from_angular(pj.rotation_map().transpose() * torque_j),
         ]
     }
     fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vec3, Vec3>; 2] {
-        let ang = self.darboux_gradient_ang(p);
-        let jacobian_i = ang * pi.rotation_map();
+        let jacobian_i = self.darboux_gradient_ang(p) * pi.rotation_map();
         let diag_i = jacobian_i.transpose() * self.bend_twist() * jacobian_i;
         let diag_i = Split::from_angular(diag_i.diagonal());
-        let jacobian_j = -ang * pj.rotation_map();
+        let jacobian_j = self.darboux_gradient_ang([pj, pi]) * pj.rotation_map();
         let diag_j = jacobian_j.transpose() * self.bend_twist() * jacobian_j;
         let diag_j = Split::from_angular(diag_j.diagonal());
         [diag_i, diag_j]
     }
-}
-
-#[test]
-fn num_diff_bend_twist_constraint() {
-    let rod = CosseratParameters {
-        rod_radius: 0.5,
-        young_modulus: 1.0,
-        shear_modulus: 1.0,
-        length: 2.0,
-        rest_rotation: UQuat::identity(),
-    };
-    let pi = Split::from_angular(UQuat::from_quaternion(Quat::new(-1.6, 3.0, 2.0, -1.0)));
-    let pj = Split::from_angular(UQuat::from_quaternion(Quat::new(1.2, 2.9, 2.3, -0.9)));
-    let bt = CosseratBendTwist { params: rod };
-    let h = f64::EPSILON.sqrt();
-    let analytical_grad = bt.darboux_gradient_ang([pi, pj]);
-    let numerical_grad = [0, 1, 2, 3].map(|i| {
-        let mut pi_p = pi;
-        pi_p.angular.as_mut_unchecked()[i] += h;
-        let mut pi_n = pi;
-        pi_n.angular.as_mut_unchecked()[i] -= h;
-        (bt.darboux_vector([pi_p, pj]) - bt.darboux_vector([pi_n, pj])) / (2.0 * h)
-    });
-    let numerical_grad = Mat3x4::from_columns(&numerical_grad);
-    println!("Analytical: {}", analytical_grad);
-    println!("Numerical: {}", numerical_grad);
-    let numerical_grad_j = [0, 1, 2, 3].map(|i| {
-        let mut pj_p = pj;
-        pj_p.angular.as_mut_unchecked()[i] += h;
-        let mut pj_n = pj;
-        pj_n.angular.as_mut_unchecked()[i] -= h;
-        (bt.darboux_vector([pi, pj_p]) - bt.darboux_vector([pi, pj_n])) / (2.0 * h)
-    });
-    let numerical_grad_j = Mat3x4::from_columns(&numerical_grad_j);
-    println!("Numerical J: {}", numerical_grad_j);
-
-    println!("Diff: {}", analytical_grad - numerical_grad);
-    panic!();
 }
 
 #[test]
@@ -634,7 +585,6 @@ fn test_cosserat() {
     let se = CosseratStretchShear { params: rod };
     let inv_se = CosseratStretchShear { params: inv_rod };
     let bt = CosseratBendTwist { params: rod };
-    let inv_bt = CosseratBendTwist { params: inv_rod };
     let pi = Split::from_linear(vector![0.0, -0.1, 0.0]);
     let pj = Split::from_linear(vector![2.0, 0.1, 0.0]);
 
@@ -642,30 +592,6 @@ fn test_cosserat() {
     let diff = se.force([pi, pj])[0] - inv_se.force([pj, pi])[1];
     assert!(diff.linear.norm() < 1e-6);
     assert!(diff.angular.norm() < 1e-6);
-
-    let pi = Split::from_angular(UQuat::from_quaternion(Quat::new(-1.6, 3.0, 2.0, -1.0)));
-    let pj = Split::from_angular(UQuat::from_quaternion(Quat::new(1.2, 2.9, 2.3, -0.9)));
-    println!("Darboux: {:?}", bt.darboux_vector([pi, pj]));
-    println!("Darboux: {:?}", bt.darboux_vector([pj, pi]));
-    println!("{:?}", bt.force([pi, pj]));
-    println!("{:?}", bt.force([pj, pi]));
-    // let diff = bt.force([pi, pj])[0] - inv_bt.force([pj, pi])[1];
-    // println!("Diff: {:?}", diff);
-    panic!();
-}
-
-#[derive(Debug, Clone)]
-struct Particles {
-    position: Vec<Position>,
-    last_position: Vec<Position>,
-    velocity: Vec<Velocity>,
-    last_velocity: Vec<Velocity>,
-    mass: Vec<Mass>,
-}
-impl Particles {
-    fn len(&self) -> usize {
-        self.position.len()
-    }
 }
 
 #[derive(Debug)]
@@ -681,8 +607,8 @@ async fn main() {
         .map(Split::from_linear)
         .collect();
     let mut velocity: Vec<Velocity> = vec![
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.1, 0.05, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![-0.1, 0.01, 0.16]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.1]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, -0.1]),
     ];
     let mass: Vec<Mass> = vec![1.0, 1.0]
         .into_iter()
@@ -698,20 +624,15 @@ async fn main() {
     let se = CosseratStretchShear {
         params: CosseratParameters::resting_state(0.5, 1.0, 1.0, [position[0], position[1]]),
     };
-    println!(
-        "Measures: {:?}, {:?}",
-        se.strain_measure([position[0], position[1]]),
-        bt.darboux_vector([position[0], position[1]])
-    );
 
     let constraints = [
         Constraint2 {
             targets: [0, 1],
-            constraint: Box::new(bt),
+            constraint: Box::new(se),
         },
         Constraint2 {
             targets: [0, 1],
-            constraint: Box::new(se),
+            constraint: Box::new(bt),
         },
     ];
 
@@ -760,9 +681,7 @@ async fn main() {
                     let pj = position[j];
                     let p = [pi, pj];
                     let force = constraint.force(p);
-                    // println!("Force: {:?}", force);
                     let grad2 = constraint.grad2_diag(p);
-                    // println!("Gradient: {:?}", grad2);
                     forces[i] += force[0];
                     forces[j] += force[1];
                     grad2_diag[i] += grad2[0];
@@ -778,7 +697,6 @@ async fn main() {
                 let gradient = (0..particles)
                     .map(|i| mass[i] * (velocity[i] - last_velocity[i]) - forces[i])
                     .collect::<Vec<_>>();
-                // println!("Gradient: {:?}", gradient);
                 for i in 0..particles {
                     let step = Split {
                         linear: preconditioner_diag[i]
@@ -795,6 +713,24 @@ async fn main() {
                     position[i] = last_position[i].step(velocity[i]);
                 }
             }
+        }
+        {
+            use macroquad::prelude::*;
+            let scaling = 50.0;
+            let offset = vector![200.0, 200.0];
+
+            clear_background(BLACK);
+            for p in &position {
+                let pos = p.linear.xy() * scaling + offset;
+                draw_circle(pos.x, pos.y, 0.5 * scaling, RED);
+                let rot_x = (p.angular * vector![0.5, 0.0, 0.0]).xy() * scaling + pos;
+                draw_line(pos.x, pos.y, rot_x.x, rot_x.y, 3.0, WHITE);
+                let rot_y = (p.angular * vector![0.0, 0.5, 0.0]).xy() * scaling + pos;
+                draw_line(pos.x, pos.y, rot_y.x, rot_y.y, 3.0, GREEN);
+                let rot_z = (p.angular * vector![0.0, 0.0, 0.5]).xy() * scaling + pos;
+                draw_line(pos.x, pos.y, rot_z.x, rot_z.y, 3.0, BLUE);
+            }
+            macroquad::window::next_frame().await
         }
     }
 }
