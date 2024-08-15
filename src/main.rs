@@ -527,6 +527,17 @@ impl CosseratBendTwist {
     }
     fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Mat3x4 {
         let dqij = self.center_rotation_gradient(p);
+        println!("Dqij: {}", dqij);
+        println!(
+            "RMat: {}",
+            rmul_mat(*pj.angular - *pi.angular)
+                * Mat4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
+                * dqij
+        );
+        println!(
+            "Center_mat: {}",
+            lmul_mat(*self.center_rotation(p).conjugate())
+        );
         let gradient = -2.0 / self.length
             * (1.0 / 2.0
                 * rmul_mat(*pj.angular - *pi.angular)
@@ -545,7 +556,8 @@ impl Constraint<2> for CosseratBendTwist {
     fn force(&self, p @ [pi, pj]: [Position; 2]) -> [Force; 2] {
         let darboux = self.darboux_vector(p);
         let torque =
-            -self.length * self.darboux_gradient_ang(p).transpose() * self.bend_twist() * darboux; // TODO: Finish.
+            -self.length * self.darboux_gradient_ang(p).transpose() * self.bend_twist() * darboux;
+        println!("Torque: {:?}", torque);
         [
             -Split::from_angular(pi.rotation_map().transpose() * torque),
             Split::from_angular(pj.rotation_map().transpose() * torque),
@@ -561,6 +573,45 @@ impl Constraint<2> for CosseratBendTwist {
         let diag_j = Split::from_angular(diag_j.diagonal());
         [diag_i, diag_j]
     }
+}
+
+#[test]
+fn test_cosserat() {
+    let rod = CosseratParameters {
+        rod_radius: 0.5,
+        young_modulus: 1.0,
+        shear_modulus: 1.0,
+        length: 2.0,
+        rest_rotation: UQuat::identity(),
+    };
+    let inv_rod = CosseratParameters {
+        rod_radius: 0.5,
+        young_modulus: 1.0,
+        shear_modulus: 1.0,
+        length: 2.0,
+        rest_rotation: UQuat::from_axis_angle(&Vec3::y_axis(), PI),
+    };
+    let se = CosseratStretchShear { params: rod };
+    let inv_se = CosseratStretchShear { params: inv_rod };
+    let bt = CosseratBendTwist { params: rod };
+    let inv_bt = CosseratBendTwist { params: inv_rod };
+    let pi = Split::from_linear(vector![0.0, -0.1, 0.0]);
+    let pj = Split::from_linear(vector![2.0, 0.1, 0.0]);
+
+    assert_eq!(bt.darboux_vector([pi, pj]), vector![0.0, 0.0, 0.0]);
+    let diff = se.force([pi, pj])[0] - inv_se.force([pj, pi])[1];
+    assert!(diff.linear.norm() < 1e-6);
+    assert!(diff.angular.norm() < 1e-6);
+
+    let pi = Split::from_angular(UQuat::from_quaternion(Quat::new(-1.6, 3.0, 2.0, -1.0)));
+    let pj = Split::from_angular(UQuat::from_quaternion(Quat::new(1.2, 2.9, 2.3, -0.9)));
+    println!("Darboux: {:?}", bt.darboux_vector([pi, pj]));
+    println!("Darboux: {:?}", bt.darboux_vector([pj, pi]));
+    println!("{:?}", bt.force([pi, pj]));
+    println!("{:?}", bt.force([pj, pi]));
+    // let diff = bt.force([pi, pj])[0] - inv_bt.force([pj, pi])[1];
+    // println!("Diff: {:?}", diff);
+    panic!();
 }
 
 #[derive(Debug, Clone)]
@@ -590,8 +641,8 @@ async fn main() {
         .map(Split::from_linear)
         .collect();
     let mut velocity: Vec<Velocity> = vec![
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.1, 0.0, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![-0.1, 0.0, 0.0]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.1, 0.05, 0.0]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![-0.1, 0.01, 0.16]),
     ];
     let mass: Vec<Mass> = vec![1.0, 1.0]
         .into_iter()
