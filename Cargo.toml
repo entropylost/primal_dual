@@ -5,5 +5,9 @@ edition = "2021"
 
 [dependencies]
 macroquad = "0.4.11"
-nalgebra = { version = "0.33.0", features = ["convert-glam027"] }
+nalgebra = { version = "0.33.0" }
 rand = "0.8.5"
+
+luisa_compute = { git = "https://github.com/iMplode-nZ/luisa-compute-rs", features = [
+    "nalgebra",
+] }

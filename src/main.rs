@@ -31,14 +31,13 @@ type Mass = Split<f32, Matrix3>;
 
 impl Position {
     fn rotation_map(self) -> Matrix4x3 {
-        let q = self.angular.quaternion().as_vector();
-        1.0 / 2.0
-            * matrix![
-                q.w, q.z, -q.y;
-                -q.z, q.w, q.x;
-                q.y, -q.x, q.w;
-                -q.x, -q.y, -q.z;
-            ]
+        let q = self.angular.quaternion().as_vector() / 2.0;
+        matrix![
+            q.w, q.z, -q.y;
+            -q.z, q.w, q.x;
+            q.y, -q.x, q.w;
+            -q.x, -q.y, -q.z;
+        ]
     }
     fn kinematic_map(self) -> Split<Matrix3, Matrix4x3> {
         Split::new(Matrix3::identity(), self.rotation_map())
@@ -124,6 +123,15 @@ impl CosseratRod {
             self.young_modulus * s,
         )
     }
+    fn stretch_shear_a(self) -> f32 {
+        let s = PI * self.radius.powi(2);
+        let a = 5.0 / 6.0 * s;
+        self.shear_modulus * a
+    }
+    fn stretch_shear_b(self) -> f32 {
+        let s = PI * self.radius.powi(2);
+        self.young_modulus * s - self.stretch_shear_a()
+    }
     fn stretch_shear(self) -> Matrix3 {
         Matrix3::from_diagonal(&self.stretch_shear_diag())
     }
@@ -208,13 +216,52 @@ impl CosseratStretchShear {
                 .transpose()
     }
     fn strain_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Matrix3x4 {
-        let qij = *self.center_rotation(p);
-        let dqij = self.center_rotation_gradient(p);
-        1.0 / self.length
-            * self.rest_rotation.to_rotation_matrix().matrix().transpose()
-            * rmul_mat(Quaternion::from_imag(pj.linear - pi.linear) * qij).fixed_view::<3, 4>(0, 0)
-            * Matrix4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
-            * dqij
+        let qm = pi.angular.lerp(&pj.angular, 0.5);
+        let qij = UnitQuaternion::from_quaternion(qm);
+
+        let qpart = (Quaternion::from_imag(pj.linear - pi.linear) * *qij);
+        let v = qpart.coords;
+
+        let a = qij.to_rotation_matrix().matrix()
+            * matrix![
+                -v.w, -v.z, v.y, v.x;
+                v.z, -v.w, -v.x, v.y;
+                -v.y, v.x, -v.w, v.z;
+            ];
+
+        let b = (pj.linear - pi.linear) * qij.as_vector().transpose();
+
+        1.0 / self.length / qm.norm()
+            * (qij * self.rest_rotation)
+                .to_rotation_matrix()
+                .matrix()
+                .transpose()
+            * (a - b)
+    }
+    fn strain_gradient_ang_no_rot(self, p @ [pi, pj]: [Position; 2]) -> Matrix3x4 {
+        let qm = pi.angular.lerp(&pj.angular, 0.5);
+        let qij = UnitQuaternion::from_quaternion(qm);
+
+        let qpart = (Quaternion::from_imag(pj.linear - pi.linear) * *qij);
+        let v = qpart.coords;
+
+        // TODO: There should be some way of optimizing this.
+        let a = qij.to_rotation_matrix().matrix()
+            // rmul_mat(qpart).fixed_view::<3, 4>(0, 0) * Matrix4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
+
+            // rmul_mat(qpart).fixed_view::<3, 4>(0, 0) * Matrix4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0]) * q
+            // = (q.conjugate() * qpart).imag()
+            // qij * (q.conjugate() * qpart).imag() * qij.conjugate()
+
+            * matrix![
+                -v.w, -v.z, v.y, v.x;
+                v.z, -v.w, -v.x, v.y;
+                -v.y, v.x, -v.w, v.z;
+            ];
+
+        let b = (pj.linear - pi.linear) * qij.as_vector().transpose();
+
+        1.0 / self.length / qm.norm() * (a - b)
     }
 }
 
@@ -226,7 +273,7 @@ impl Constraint<2> for CosseratStretchShear {
     fn force(&self, p @ [pi, pj]: [Position; 2]) -> [Force; 2] {
         let strain = self.strain_measure(p);
         let force_i =
-            -self.length * self.strain_gradient_lin(p).transpose() * self.stretch_shear() * strain;
+            ((self.center_rotation(p) * self.rest_rotation) * (self.stretch_shear() * strain));
         let force_j = -force_i;
 
         let torque_i =
@@ -240,10 +287,15 @@ impl Constraint<2> for CosseratStretchShear {
     fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split3; 2] {
         let lin = self.strain_gradient_lin(p);
         let ang = self.strain_gradient_ang(p);
+        let angn = self.strain_gradient_ang_no_rot(p) * pi.rotation_map();
         let grad_i = Split::new(lin, ang * pi.rotation_map());
         let diag_i = Split::new(
             grad_i.linear.transpose() * self.stretch_shear() * grad_i.linear,
-            grad_i.angular.transpose() * self.stretch_shear() * grad_i.angular,
+            angn.transpose() * angn * self.stretch_shear_a()
+                + grad_i.angular.transpose()
+                    * Matrix3::from_diagonal(&vector![0.0, 0.0, 1.0])
+                    * grad_i.angular
+                    * self.stretch_shear_b(),
         );
         let diag_i = Split::new(diag_i.linear.diagonal(), diag_i.angular.diagonal());
         let grad_j = Split::new(-lin, -ang * pj.rotation_map());
@@ -273,14 +325,46 @@ impl CosseratBendTwist {
             * (*self.center_rotation(p).conjugate() * (*pj.angular - *pi.angular)).imag()
     }
     fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Matrix3x4 {
-        let dqij = self.center_rotation_gradient(p);
-        let gradient = 2.0 / self.length
-            * (1.0 / 2.0
-                * rmul_mat(*pj.angular - *pi.angular)
+        let qm = pi.angular.lerp(&pj.angular, 0.5);
+        let qij = UnitQuaternion::from_quaternion(qm);
+        let qijc_mat = lmul_mat(*qij.conjugate());
+        let gradient = 1.0 / self.length
+            * ((rmul_mat(*pj.angular - *pi.angular)
                 * Matrix4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
-                * dqij
-                - lmul_mat(*self.center_rotation(p).conjugate()));
+                - (qijc_mat * (*pj.angular - *pi.angular).as_vector())
+                    * qij.as_vector().transpose())
+                / qm.norm()
+                - 2.0 * qijc_mat);
         gradient.fixed_view::<3, 4>(0, 0).into_owned()
+    }
+    fn darboux_gradient_ang_adj(self, p @ [pi, pj]: [Position; 2]) -> Matrix3 {
+        let qm = pi.angular.lerp(&pj.angular, 0.5);
+        let qij = UnitQuaternion::from_quaternion(qm);
+        let p = qij.coords;
+
+        let qijc_mat = matrix![
+            p.w, p.z, -p.y, -p.x;
+            -p.z, p.w, p.x, -p.y;
+            p.y, -p.x, p.w, -p.z;
+        ];
+        let qdiff = *pj.angular - *pi.angular;
+        let v = qdiff.coords;
+        let a = matrix![
+            -v.w, -v.z, v.y, v.x;
+            v.z, -v.w, -v.x, v.y;
+            -v.y, v.x, -v.w, v.z
+        ];
+        let b = qijc_mat * v * p.transpose();
+        let c = qijc_mat;
+        let gradient = ((a - b) / qm.norm() - 2.0 * c) / self.length;
+        let q = pi.angular.coords / 2.0;
+        gradient //  pi.rotation_map()
+            * matrix![
+                q.w, q.z, -q.y;
+                -q.z, q.w, q.x;
+                q.y, -q.x, q.w;
+                -q.x, -q.y, -q.z;
+            ]
     }
 }
 
@@ -291,21 +375,27 @@ impl Constraint<2> for CosseratBendTwist {
     }
     fn force(&self, p @ [pi, pj]: [Position; 2]) -> [Force; 2] {
         let darboux = self.darboux_vector(p);
-        let torque_i =
-            -self.length * self.darboux_gradient_ang(p).transpose() * self.bend_twist() * darboux;
+        let torque_i = -self.length
+            * self.darboux_gradient_ang_adj(p).transpose()
+            * self.bend_twist()
+            * darboux;
         let torque_j = -self.length
             * self.darboux_gradient_ang([pj, pi]).transpose()
             * self.bend_twist()
             * -darboux;
         [
-            Split::from_angular(pi.rotation_map().transpose() * torque_i),
+            Split::from_angular(torque_i),
             Split::from_angular(pj.rotation_map().transpose() * torque_j),
         ]
     }
     fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split3; 2] {
-        let grad_i = self.darboux_gradient_ang(p) * pi.rotation_map();
-        let diag_i = grad_i.transpose() * self.bend_twist() * grad_i;
-        let diag_i = Split::from_angular(diag_i.diagonal());
+        let grad_i = self.darboux_gradient_ang_adj(p);
+        let bt = self.bend_twist_diag();
+        let diag_i = Split::from_angular(vector![
+            grad_i.column(0).dot(&grad_i.column(0).component_mul(&bt)),
+            grad_i.column(1).dot(&grad_i.column(1).component_mul(&bt)),
+            grad_i.column(2).dot(&grad_i.column(2).component_mul(&bt)),
+        ]);
         let grad_j = self.darboux_gradient_ang([pj, pi]) * pj.rotation_map();
         let diag_j = grad_j.transpose() * self.bend_twist() * grad_j;
         let diag_j = Split::from_angular(diag_j.diagonal());
@@ -337,7 +427,6 @@ fn test_cosserat() {
 
     assert_eq!(bt.darboux_vector([pi, pj]), vector![0.0, 0.0, 0.0]);
     let diff = se.force([pi, pj])[0] - inv_se.force([pj, pi])[1];
-    println!("{:?}", diff.angular);
     assert!(diff.linear.norm() < 1e-5);
     assert!(diff.angular.norm() < 1e-4);
 }
@@ -396,9 +485,10 @@ fn compare_cosserat_values() {
         grad2,
         [Split::from_angular(vector![0.037722476, 0.12580885, 0.016810376]); 2],
     );
-    // let (force_b, grad2_b) = opt::compute_bt_na(rod, [pi, pj]);
-    // assert_close(force[0], force_b);
-    // assert_close(grad2[0], grad2_b);
+
+    let (force_se_b, grad2_se_b, force_bt_b, grad2_bt_b) = opt::compute_na(rod, [pi, pj]);
+    assert!((force_bt_b.angular - force[0].angular).norm() < 1e-6);
+    assert!((grad2_bt_b.angular - grad2[0].angular).norm() < 1e-6);
 
     let potential = se.potential([pi, pj]);
     assert_eq!(potential, 3.6220994);
@@ -432,9 +522,11 @@ fn compare_cosserat_values() {
             ),
         ],
     );
-    // let (force_b, grad2_b) = opt::compute_se_na(rod, [pi, pj]);
-    // assert_close(force[0], force_b);
-    // assert_close(grad2[0], grad2_b);
+
+    assert!((force_se_b.linear - force[0].linear).norm() < 1e-6);
+    assert!((grad2_se_b.linear - grad2[0].linear).norm() < 1e-6);
+    assert!((force_se_b.angular - force[0].angular).norm() < 1e-6);
+    assert!((grad2_se_b.angular - grad2[0].angular).norm() < 1e-6);
 }
 
 #[derive(Debug)]
