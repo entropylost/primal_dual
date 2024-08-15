@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 macroquad = "0.4.11"
-nalgebra = "0.33.0"
+nalgebra = { version = "0.33.0", features = ["convert-glam027"] }
+rand = "0.8.5"
