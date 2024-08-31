@@ -2,53 +2,45 @@ use super::*;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Rod {
-    pub(crate) normal: Vector3,
+    pub(crate) normal: RVector3,
     pub(crate) stiffness: f32,
     pub(crate) length: f32,
 }
-impl Constraint<2> for Rod {
-    fn potential(&self, [pi, pj]: [Position; 2]) -> f32 {
-        let value = (pi.linear - pj.linear).dot(&self.normal) - self.length;
-        value * self.stiffness
+impl Constraint<2, 1> for Rod {
+    fn value(&self, [pi, pj]: [Position; 2]) -> Scalar {
+        let value = (self.normal * (pi.linear - pj.linear)).into_scalar() - self.length;
+        Scalar::new(value)
     }
-    fn force(&self, p: [Position; 2]) -> [Force; 2] {
-        let value = self.potential(p);
+    fn gradient(&self, positions: [Position; 2]) -> [Gradient<1>; 2] {
         [
-            -Split::from_linear(value * self.normal),
-            Split::from_linear(value * self.normal),
+            Split::from_linear(self.normal),
+            Split::from_linear(-self.normal),
         ]
     }
-    fn grad2_diag(&self, _p: [Position; 2]) -> [Split<Vector3, Vector3>; 2] {
-        [Split::from_linear((self.normal * self.stiffness * self.normal.transpose()).diagonal()); 2]
+    fn stiffness(&self) -> Scalar {
+        Scalar::new(self.stiffness)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Contact {
-    pub(crate) normal: Vector3,
+    pub(crate) normal: RVector3,
     pub(crate) stiffness: f32,
     pub(crate) length: f32,
 }
-impl Constraint<2> for Contact {
-    fn potential(&self, [pi, pj]: [Position; 2]) -> f32 {
-        let value = (pi.linear - pj.linear).dot(&self.normal) - self.length;
-        (value * self.stiffness).min(0.0)
+impl Constraint<2, 1> for Contact {
+    fn value(&self, [pi, pj]: [Position; 2]) -> Scalar {
+        let value = (self.normal * (pi.linear - pj.linear)).into_scalar() - self.length;
+        Scalar::new(value.min(0.0))
     }
-    fn force(&self, p: [Position; 2]) -> [Force; 2] {
-        let value = self.potential(p);
+    fn gradient(&self, positions: [Position; 2]) -> [Gradient<1>; 2] {
         [
-            -Split::from_linear(value * self.normal),
-            Split::from_linear(value * self.normal),
+            Split::from_linear(self.normal),
+            Split::from_linear(-self.normal),
         ]
     }
-    fn grad2_diag(&self, p: [Position; 2]) -> [Split<Vector3, Vector3>; 2] {
-        if self.potential(p) < 0.0 {
-            [Split::from_linear(
-                (self.normal * self.stiffness * self.normal.transpose()).diagonal(),
-            ); 2]
-        } else {
-            [Split::default(); 2]
-        }
+    fn stiffness(&self) -> Scalar {
+        Scalar::new(self.stiffness)
     }
 }
 
@@ -57,26 +49,16 @@ pub(crate) struct RadialContact {
     pub(crate) stiffness: f32,
     pub(crate) length: f32,
 }
-impl Constraint<2> for RadialContact {
-    fn potential(&self, [pi, pj]: [Position; 2]) -> f32 {
+impl Constraint<2, 1> for RadialContact {
+    fn value(&self, [pi, pj]: [Position; 2]) -> Scalar {
         let value = (pi.linear - pj.linear).norm() - self.length;
-        (value * self.stiffness).min(0.0)
+        Scalar::new(value.min(0.0))
     }
-    fn force(&self, p @ [pi, pj]: [Position; 2]) -> [Force; 2] {
-        let normal = (pi.linear - pj.linear).normalize();
-        let value = self.potential(p);
-        [
-            -Split::from_linear(value * normal),
-            Split::from_linear(value * normal),
-        ]
+    fn gradient(&self, [pi, pj]: [Position; 2]) -> [Gradient<1>; 2] {
+        let normal = (pi.linear - pj.linear).normalize().transpose();
+        [Split::from_linear(normal), Split::from_linear(-normal)]
     }
-    fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split<Vector3, Vector3>; 2] {
-        let normal = (pi.linear - pj.linear).normalize();
-
-        if self.potential(p) < 0.0 {
-            [Split::from_linear((normal * self.stiffness * normal.transpose()).diagonal()); 2]
-        } else {
-            [Split::default(); 2]
-        }
+    fn stiffness(&self) -> Scalar {
+        Scalar::new(self.stiffness)
     }
 }

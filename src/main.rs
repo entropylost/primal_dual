@@ -4,8 +4,11 @@
 #![allow(unused)]
 
 use contact::Contact;
+use cosserat::{CosseratBendTwist, CosseratRod, CosseratStretchShear};
 use macroquad::input::KeyCode;
-use nalgebra::{self as na, matrix, stack, vector};
+use nalgebra::{
+    self as na, matrix, stack, vector, DVector, Matrix, MatrixXx3, MatrixXx4, SMatrix, SVector,
+};
 use std::fmt::Debug;
 use std::{f32::consts::PI, ops::Deref};
 
@@ -13,8 +16,11 @@ mod opt;
 mod split;
 use split::Split;
 mod contact;
+mod cosserat;
 
+type Scalar = na::Matrix1<f32>;
 type Vector3 = na::Vector3<f32>;
+type RVector3 = na::RowVector3<f32>;
 type Matrix3 = na::Matrix3<f32>;
 type Matrix3x4 = na::Matrix3x4<f32>;
 type Matrix4x3 = na::Matrix4x3<f32>;
@@ -28,6 +34,27 @@ type Displacement = Split<Vector3, Quaternion>;
 type Velocity = Split<Vector3, Vector3>;
 type Force = Split<Vector3, Vector3>;
 type Mass = Split<f32, Matrix3>;
+type Gradient<const V: usize> = Split<SMatrix<f32, V, 3>, SMatrix<f32, V, 4>>;
+type DGradient = Split<MatrixXx3<f32>, MatrixXx4<f32>>;
+
+impl<const V: usize> Gradient<V> {
+    fn dynamic(self) -> DGradient {
+        let linear_rows = self
+            .linear
+            .row_iter()
+            .map(|x| x.clone_owned())
+            .collect::<Vec<_>>();
+        let angular_rows = self
+            .angular
+            .row_iter()
+            .map(|x| x.clone_owned())
+            .collect::<Vec<_>>();
+        Split::new(
+            MatrixXx3::from_rows(&linear_rows),
+            MatrixXx4::from_rows(&angular_rows),
+        )
+    }
+}
 
 impl Position {
     fn rotation_map(self) -> Matrix4x3 {
@@ -81,458 +108,110 @@ fn test_rotation_map() {
     );
 }
 
-trait Constraint<const N: usize>: Debug {
-    fn potential(&self, positions: [Position; N]) -> f32;
-    fn force(&self, positions: [Position; N]) -> [Force; N];
-    fn grad2_diag(&self, positions: [Position; N]) -> [Split3; N];
-    // Add dual properties. Require indexing into a set of dual vectors or something.
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CosseratRod {
-    radius: f32,
-    young_modulus: f32,
-    shear_modulus: f32,
-    length: f32,
-    rest_rotation: UnitQuaternion,
-}
-impl CosseratRod {
-    fn resting_state(
-        rod_radius: f32,
-        young_modulus: f32,
-        shear_modulus: f32,
-        [pi, pj]: [Position; 2],
-    ) -> Self {
-        let length = (pj.linear - pi.linear).norm();
-        let rest_rotation =
-            UnitQuaternion::rotation_between(&Vector3::z(), &(pj.linear - pi.linear)).unwrap();
-        Self {
-            radius: rod_radius,
-            young_modulus,
-            shear_modulus,
-            length,
-            rest_rotation,
-        }
-    }
-    fn stretch_shear_diag(self) -> Vector3 {
-        let s = PI * self.radius.powi(2);
-        let a = 5.0 / 6.0 * s;
-        Vector3::new(
-            self.shear_modulus * a,
-            self.shear_modulus * a,
-            self.young_modulus * s,
-        )
-    }
-    fn stretch_shear_a(self) -> f32 {
-        let s = PI * self.radius.powi(2);
-        let a = 5.0 / 6.0 * s;
-        self.shear_modulus * a
-    }
-    fn stretch_shear_b(self) -> f32 {
-        let s = PI * self.radius.powi(2);
-        self.young_modulus * s - self.stretch_shear_a()
-    }
-    fn stretch_shear(self) -> Matrix3 {
-        Matrix3::from_diagonal(&self.stretch_shear_diag())
-    }
-    fn bend_twist_diag(self) -> Vector3 {
-        let i = PI * self.radius.powi(4) / 4.0;
-        let j = PI * self.radius.powi(4) / 2.0;
-        Vector3::new(
-            self.young_modulus * i,
-            self.young_modulus * i,
-            self.shear_modulus * j,
-        )
-    }
-    fn bend_twist(self) -> Matrix3 {
-        Matrix3::from_diagonal(&self.bend_twist_diag())
-    }
-    fn center_rotation(self, [pi, pj]: [Position; 2]) -> UnitQuaternion {
-        pi.angular.nlerp(&pj.angular, 0.5)
-    }
-    fn center_rotation_gradient(self, [pi, pj]: [Position; 2]) -> Matrix4 {
-        let qm = pi.angular.lerp(&pj.angular, 0.5);
-        let qij = UnitQuaternion::from_quaternion(qm);
-        (Matrix4::identity() - qij.as_vector() * qij.as_vector().transpose()) / qm.norm()
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CosseratStretchShear {
-    rod: CosseratRod,
-}
-impl Deref for CosseratStretchShear {
-    type Target = CosseratRod;
-    fn deref(&self) -> &Self::Target {
-        &self.rod
-    }
-}
-
-// p * q = rmul_mat(q) * p
-fn rmul_mat(q: Quaternion) -> Matrix4 {
-    stack![
-        Matrix3::from_diagonal_element(q.scalar()) - cross_matrix(q.vector().into()), q.vector();
-        -q.vector().transpose(), na::Matrix1::<f32>::new(q.scalar())
-    ]
-}
-
-// p * q = lmul_mat(p) * q
-fn lmul_mat(p: Quaternion) -> Matrix4 {
-    stack![
-        Matrix3::from_diagonal_element(p.scalar()) + cross_matrix(p.vector().into()), p.vector();
-         -p.vector().transpose(), na::Matrix1::<f32>::new(p.scalar())
-    ]
-}
-
-#[test]
-fn test_quat_mul() {
-    let p = Quaternion::new(1.0, 6.0, -2.0, 3.0);
-    let q = Quaternion::new(7.0, -3.0, 5.0, 10.0);
-    assert_eq!((p * q).coords, lmul_mat(p) * q.coords);
-    assert_eq!((p * q).coords, rmul_mat(q) * p.coords);
-}
-
-// v.cross(w) = cross_matrix(v) * w
-fn cross_matrix(v: Vector3) -> Matrix3 {
-    matrix![
-        0.0, -v.z, v.y;
-        v.z, 0.0, -v.x;
-        -v.y, v.x, 0.0
-    ]
-}
-
-impl CosseratStretchShear {
-    fn strain_measure(self, p @ [pi, pj]: [Position; 2]) -> Vector3 {
-        1.0 / self.length
-            * ((self.center_rotation(p) * self.rest_rotation).inverse() * (pj.linear - pi.linear))
-            - Vector3::z()
-    }
-    // Wrt. the first position
-    fn strain_gradient_lin(self, p: [Position; 2]) -> Matrix3 {
-        -1.0 / self.length
-            * (self.center_rotation(p) * self.rest_rotation)
-                .to_rotation_matrix()
-                .matrix()
-                .transpose()
-    }
-    fn strain_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Matrix3x4 {
-        let qm = pi.angular.lerp(&pj.angular, 0.5);
-        let qij = UnitQuaternion::from_quaternion(qm);
-
-        let qpart = (Quaternion::from_imag(pj.linear - pi.linear) * *qij);
-        let v = qpart.coords;
-
-        let a = qij.to_rotation_matrix().matrix()
-            * matrix![
-                -v.w, -v.z, v.y, v.x;
-                v.z, -v.w, -v.x, v.y;
-                -v.y, v.x, -v.w, v.z;
-            ];
-
-        let b = (pj.linear - pi.linear) * qij.as_vector().transpose();
-
-        1.0 / self.length / qm.norm()
-            * (qij * self.rest_rotation)
-                .to_rotation_matrix()
-                .matrix()
-                .transpose()
-            * (a - b)
-    }
-    fn strain_gradient_ang_no_rot(self, p @ [pi, pj]: [Position; 2]) -> Matrix3x4 {
-        let qm = pi.angular.lerp(&pj.angular, 0.5);
-        let qij = UnitQuaternion::from_quaternion(qm);
-
-        let qpart = (Quaternion::from_imag(pj.linear - pi.linear) * *qij);
-        let v = qpart.coords;
-
-        // TODO: There should be some way of optimizing this.
-        let a = qij.to_rotation_matrix().matrix()
-            // rmul_mat(qpart).fixed_view::<3, 4>(0, 0) * Matrix4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
-
-            // rmul_mat(qpart).fixed_view::<3, 4>(0, 0) * Matrix4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0]) * q
-            // = (q.conjugate() * qpart).imag()
-            // qij * (q.conjugate() * qpart).imag() * qij.conjugate()
-
-            * matrix![
-                -v.w, -v.z, v.y, v.x;
-                v.z, -v.w, -v.x, v.y;
-                -v.y, v.x, -v.w, v.z;
-            ];
-
-        let b = (pj.linear - pi.linear) * qij.as_vector().transpose();
-
-        1.0 / self.length / qm.norm() * (a - b)
-    }
-}
-
-impl Constraint<2> for CosseratStretchShear {
-    fn potential(&self, p: [Position; 2]) -> f32 {
-        let strain = self.strain_measure(p);
-        (self.length / 2.0 * strain.transpose() * self.stretch_shear() * strain).to_scalar()
-    }
-    fn force(&self, p @ [pi, pj]: [Position; 2]) -> [Force; 2] {
-        let strain = self.strain_measure(p);
-        let force_i =
-            ((self.center_rotation(p) * self.rest_rotation) * (self.stretch_shear() * strain));
-        let force_j = -force_i;
-
-        let torque_i =
-            -self.length * self.strain_gradient_ang(p).transpose() * self.stretch_shear() * strain;
-        let torque_j = torque_i; // Note: The torque isn't conserved but that's fine because its counterbalanced by the force.
-        [
-            Split::new(force_i, pi.rotation_map().transpose() * torque_i),
-            Split::new(force_j, pj.rotation_map().transpose() * torque_j),
-        ]
-    }
-    fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split3; 2] {
-        let lin = self.strain_gradient_lin(p);
-        let ang = self.strain_gradient_ang(p);
-        let angn = self.strain_gradient_ang_no_rot(p) * pi.rotation_map();
-        let grad_i = Split::new(lin, ang * pi.rotation_map());
-        let diag_i = Split::new(
-            grad_i.linear.transpose() * self.stretch_shear() * grad_i.linear,
-            angn.transpose() * angn * self.stretch_shear_a()
-                + grad_i.angular.transpose()
-                    * Matrix3::from_diagonal(&vector![0.0, 0.0, 1.0])
-                    * grad_i.angular
-                    * self.stretch_shear_b(),
-        );
-        let diag_i = Split::new(diag_i.linear.diagonal(), diag_i.angular.diagonal());
-        let grad_j = Split::new(-lin, -ang * pj.rotation_map());
-        let diag_j = Split::new(
-            grad_j.linear.transpose() * self.stretch_shear() * grad_j.linear,
-            grad_j.angular.transpose() * self.stretch_shear() * grad_j.angular,
-        );
-        let diag_j = Split::new(diag_j.linear.diagonal(), diag_j.angular.diagonal());
-        [diag_i, diag_j]
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CosseratBendTwist {
-    rod: CosseratRod,
-}
-impl Deref for CosseratBendTwist {
-    type Target = CosseratRod;
-    fn deref(&self) -> &Self::Target {
-        &self.rod
-    }
-}
-
-impl CosseratBendTwist {
-    fn darboux_vector(self, p @ [pi, pj]: [Position; 2]) -> Vector3 {
-        2.0 / self.length
-            * (*self.center_rotation(p).conjugate() * (*pj.angular - *pi.angular)).imag()
-    }
-    fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Matrix3x4 {
-        let qm = pi.angular.lerp(&pj.angular, 0.5);
-        let qij = UnitQuaternion::from_quaternion(qm);
-        let qijc_mat = lmul_mat(*qij.conjugate());
-        let gradient = 1.0 / self.length
-            * ((rmul_mat(*pj.angular - *pi.angular)
-                * Matrix4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
-                - (qijc_mat * (*pj.angular - *pi.angular).as_vector())
-                    * qij.as_vector().transpose())
-                / qm.norm()
-                - 2.0 * qijc_mat);
-        gradient.fixed_view::<3, 4>(0, 0).into_owned()
-    }
-    fn darboux_gradient_ang_adj(self, p @ [pi, pj]: [Position; 2]) -> Matrix3 {
-        let qm = pi.angular.lerp(&pj.angular, 0.5);
-        let qij = UnitQuaternion::from_quaternion(qm);
-        let p = qij.coords;
-
-        let qijc_mat = matrix![
-            p.w, p.z, -p.y, -p.x;
-            -p.z, p.w, p.x, -p.y;
-            p.y, -p.x, p.w, -p.z;
-        ];
-        let qdiff = *pj.angular - *pi.angular;
-        let v = qdiff.coords;
-        let a = matrix![
-            -v.w, -v.z, v.y, v.x;
-            v.z, -v.w, -v.x, v.y;
-            -v.y, v.x, -v.w, v.z
-        ];
-        let b = qijc_mat * v * p.transpose();
-        let c = qijc_mat;
-        let gradient = ((a - b) / qm.norm() - 2.0 * c) / self.length;
-        let q = pi.angular.coords / 2.0;
-        gradient //  pi.rotation_map()
-            * matrix![
-                q.w, q.z, -q.y;
-                -q.z, q.w, q.x;
-                q.y, -q.x, q.w;
-                -q.x, -q.y, -q.z;
-            ]
-    }
-}
-
-impl Constraint<2> for CosseratBendTwist {
-    fn potential(&self, p: [Position; 2]) -> f32 {
-        let darboux = self.darboux_vector(p);
-        (self.length / 2.0 * darboux.transpose() * self.bend_twist() * darboux).to_scalar()
-    }
-    fn force(&self, p @ [pi, pj]: [Position; 2]) -> [Force; 2] {
-        let darboux = self.darboux_vector(p);
-        let torque_i = -self.length
-            * self.darboux_gradient_ang_adj(p).transpose()
-            * self.bend_twist()
-            * darboux;
-        let torque_j = -self.length
-            * self.darboux_gradient_ang([pj, pi]).transpose()
-            * self.bend_twist()
-            * -darboux;
-        [
-            Split::from_angular(torque_i),
-            Split::from_angular(pj.rotation_map().transpose() * torque_j),
-        ]
-    }
-    fn grad2_diag(&self, p @ [pi, pj]: [Position; 2]) -> [Split3; 2] {
-        let grad_i = self.darboux_gradient_ang_adj(p);
-        let bt = self.bend_twist_diag();
-        let diag_i = Split::from_angular(vector![
-            grad_i.column(0).dot(&grad_i.column(0).component_mul(&bt)),
-            grad_i.column(1).dot(&grad_i.column(1).component_mul(&bt)),
-            grad_i.column(2).dot(&grad_i.column(2).component_mul(&bt)),
-        ]);
-        let grad_j = self.darboux_gradient_ang([pj, pi]) * pj.rotation_map();
-        let diag_j = grad_j.transpose() * self.bend_twist() * grad_j;
-        let diag_j = Split::from_angular(diag_j.diagonal());
-        [diag_i, diag_j]
-    }
-}
-
-#[test]
-fn test_cosserat() {
-    let rod = CosseratRod {
-        radius: 0.5,
-        young_modulus: 1.0,
-        shear_modulus: 1.0,
-        length: 2.0,
-        rest_rotation: UnitQuaternion::identity(),
-    };
-    let inv_rod = CosseratRod {
-        radius: 0.5,
-        young_modulus: 1.0,
-        shear_modulus: 1.0,
-        length: 2.0,
-        rest_rotation: UnitQuaternion::from_axis_angle(&Vector3::y_axis(), PI),
-    };
-    let se = CosseratStretchShear { rod };
-    let inv_se = CosseratStretchShear { rod: inv_rod };
-    let bt = CosseratBendTwist { rod };
-    let pi = Split::from_linear(vector![0.0, -0.1, 0.0]);
-    let pj = Split::from_linear(vector![2.0, 0.1, 0.0]);
-
-    assert_eq!(bt.darboux_vector([pi, pj]), vector![0.0, 0.0, 0.0]);
-    let diff = se.force([pi, pj])[0] - inv_se.force([pj, pi])[1];
-    assert!(diff.linear.norm() < 1e-5);
-    assert!(diff.angular.norm() < 1e-4);
-}
-
-#[test]
-fn compare_cosserat_values() {
-    fn assert_close(a: Split3, b: Split3) {
-        assert!((a.linear - b.linear).norm() < 1e-6);
-        assert!((a.angular - b.angular).norm() < 1e-6);
-    }
-    fn assert_close2(a: [Split3; 2], b: [Split3; 2]) {
-        for i in 0..2 {
-            assert!((a[i].linear - b[i].linear).norm() < 1e-6);
-            assert!((a[i].angular - b[i].angular).norm() < 1e-6);
-        }
-    }
-
-    let rod = CosseratRod {
-        radius: 0.5,
-        young_modulus: 1.24,
-        shear_modulus: 2.6,
-        length: 2.9,
-        rest_rotation: UnitQuaternion::from_quaternion(Quaternion::new(-0.15, 0.2, -0.1, 1.0)),
-    };
-    let se = CosseratStretchShear { rod };
-    let inv_se = CosseratStretchShear {
-        rod: CosseratRod {
-            rest_rotation: rod.rest_rotation
-                * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), PI),
-            ..rod
-        },
-    };
-    let bt = CosseratBendTwist { rod };
-
-    let pi = Position {
-        linear: vector![0.9, -0.3, 2.0],
-        angular: UnitQuaternion::from_quaternion(Quaternion::new(1.0, -2.3, 4.0, 0.4)),
-    };
-    let pj = Position {
-        linear: vector![2.0, 0.1, 0.0],
-        angular: UnitQuaternion::from_quaternion(Quaternion::new(-0.6, 1.32, -0.4, -1.0)),
-    };
-
-    let potential = bt.potential([pi, pj]);
-    assert_eq!(potential, 0.27819753);
-    let force = bt.force([pi, pj]);
-    assert_close2(
-        force,
-        [
-            Split::from_angular(vector![-0.11077545, -0.2582397, -0.0065065296]),
-            Split::from_angular(vector![0.11077541, 0.25823966, 0.006506523]),
-        ],
-    );
-    let grad2 = bt.grad2_diag([pi, pj]);
-    assert_close2(
-        grad2,
-        [Split::from_angular(vector![0.037722476, 0.12580885, 0.016810376]); 2],
-    );
-
-    let (force_se_b, grad2_se_b, force_bt_b, grad2_bt_b) = opt::compute_na(rod, [pi, pj]);
-    assert!((force_bt_b.angular - force[0].angular).norm() < 1e-6);
-    assert!((grad2_bt_b.angular - grad2[0].angular).norm() < 1e-6);
-
-    let potential = se.potential([pi, pj]);
-    assert_eq!(potential, 3.6220994);
-    let force = se.force([pi, pj]);
-    let rev_force = inv_se.force([pj, pi]);
-    assert_close2(force, [rev_force[1], rev_force[0]]);
-    assert_close2(
-        force,
-        [
-            Split::new(
-                vector![1.3247634, 0.61114, -1.0095686],
-                vector![1.7519698, -0.14745957, -0.9239183],
-            ),
-            Split::new(
-                vector![-1.3247634, -0.61114, 1.0095686],
-                vector![-0.933517, -1.3915416, 1.066267],
-            ),
-        ],
-    );
-    let grad2 = se.grad2_diag([pi, pj]);
-    assert_close2(
-        grad2,
-        [
-            Split::new(
-                vector![0.13895975, 0.18287909, 0.19864689],
-                vector![0.6700756, 0.32354397, 0.5435535],
-            ),
-            Split::new(
-                vector![0.13895975, 0.18287909, 0.19864689],
-                vector![0.8507173, 0.43259573, 0.25385994],
-            ),
-        ],
-    );
-
-    assert!((force_se_b.linear - force[0].linear).norm() < 1e-6);
-    assert!((grad2_se_b.linear - grad2[0].linear).norm() < 1e-6);
-    assert!((force_se_b.angular - force[0].angular).norm() < 1e-6);
-    assert!((grad2_se_b.angular - grad2[0].angular).norm() < 1e-6);
+trait Constraint<const N: usize, const V: usize>: Debug {
+    fn value(&self, positions: [Position; N]) -> SVector<f32, V>;
+    fn gradient(&self, positions: [Position; N]) -> [Gradient<V>; N];
+    fn stiffness(&self) -> SVector<f32, V>;
 }
 
 #[derive(Debug)]
-struct Constraint2 {
-    targets: [usize; 2],
-    constraint: Box<dyn Constraint<2>>,
+struct ConstraintWrapper<const N: usize, const V: usize, X: Constraint<N, V>>(X);
+
+trait DynConstraint: Debug {
+    fn dim_n(&self) -> usize;
+    fn dim_v(&self) -> usize;
+    fn value(&self, positions: &[Position]) -> DVector<f32>;
+    fn gradient(&self, positions: &[Position]) -> Vec<DGradient>;
+    fn stiffness(&self) -> DVector<f32>;
+    fn potential(&self, positions: &[Position]) -> f32;
+    fn force(&self, positions: &[Position]) -> Vec<Force>;
+    fn grad2_diag(&self, positions: &[Position]) -> Vec<Split3>;
+}
+
+impl<const N: usize, const V: usize, X> DynConstraint for ConstraintWrapper<N, V, X>
+where
+    X: Constraint<N, V>,
+{
+    fn dim_n(&self) -> usize {
+        N
+    }
+    fn dim_v(&self) -> usize {
+        V
+    }
+    fn value(&self, positions: &[Position]) -> DVector<f32> {
+        DVector::from_column_slice(self.0.value(positions.try_into().unwrap()).as_slice())
+    }
+    fn gradient(&self, positions: &[Position]) -> Vec<DGradient> {
+        Vec::from(
+            self.0
+                .gradient(positions.try_into().unwrap())
+                .map(|x| x.dynamic()),
+        )
+    }
+    fn stiffness(&self) -> DVector<f32> {
+        DVector::from_column_slice(self.0.stiffness().as_slice())
+    }
+    fn potential(&self, positions: &[Position]) -> f32 {
+        let positions: [Position; N] = positions.try_into().unwrap();
+        let value = self.0.value(positions);
+        *(value.transpose() * Matrix::from_diagonal(&self.0.stiffness()) * value).as_scalar()
+    }
+    fn force(&self, positions: &[Position]) -> Vec<Force> {
+        let positions: [Position; N] = positions.try_into().unwrap();
+        let gradient = self.0.gradient(positions);
+        let value = self.0.value(positions);
+        gradient
+            .into_iter()
+            .zip(positions)
+            .map(|(grad, pos)| {
+                let map = pos.kinematic_map();
+                let jc = grad * map;
+                Split::new(
+                    -jc.linear.transpose() * Matrix::from_diagonal(&self.0.stiffness()) * value,
+                    -jc.angular.transpose() * Matrix::from_diagonal(&self.0.stiffness()) * value,
+                )
+            })
+            .collect::<Vec<_>>()
+    }
+    fn grad2_diag(&self, positions: &[Position]) -> Vec<Split3> {
+        let positions: [Position; N] = positions.try_into().unwrap();
+        let gradient = self.0.gradient(positions);
+        gradient
+            .into_iter()
+            .zip(positions)
+            .map(|(grad, pos)| {
+                let map = pos.kinematic_map();
+                let jc = grad * map;
+                Split::new(
+                    (jc.linear.transpose()
+                        * Matrix::from_diagonal(&self.0.stiffness())
+                        * jc.linear)
+                        .diagonal(),
+                    (jc.angular.transpose()
+                        * Matrix::from_diagonal(&self.0.stiffness())
+                        * jc.angular)
+                        .diagonal(),
+                )
+            })
+            .collect::<Vec<_>>()
+    }
+}
+
+#[derive(Debug)]
+struct ConstraintBox {
+    targets: Vec<usize>,
+    constraint: Box<dyn DynConstraint>,
+}
+impl ConstraintBox {
+    fn new<const N: usize, const V: usize>(
+        targets: [usize; N],
+        constraint: impl Constraint<N, V> + 'static,
+    ) -> Self {
+        Self {
+            targets: targets.to_vec(),
+            constraint: Box::new(ConstraintWrapper(constraint)),
+        }
+    }
 }
 
 #[macroquad::main("Pbd")]
@@ -542,8 +221,8 @@ async fn main() {
         .map(Split::from_linear)
         .collect();
     let mut velocity: Vec<Velocity> = vec![
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.1]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, -0.1]),
+        Split::new(vector![0.1, 0.0, 0.0], vector![0.0, 0.0, 0.1]),
+        Split::new(vector![-0.1, 0.0, 0.0], vector![0.0, 0.0, -0.1]),
     ];
     let mass: Vec<Mass> = vec![1.0, 1.0]
         .into_iter()
@@ -561,14 +240,8 @@ async fn main() {
     };
 
     let constraints = [
-        Constraint2 {
-            targets: [0, 1],
-            constraint: Box::new(se),
-        },
-        Constraint2 {
-            targets: [0, 1],
-            constraint: Box::new(bt),
-        },
+        ConstraintBox::new([0, 1], se),
+        ConstraintBox::new([0, 1], bt),
     ];
 
     let constraint_step = 0.1;
@@ -584,43 +257,41 @@ async fn main() {
                 position[i] = position[i].step(velocity[i]);
             }
 
-            let mut contacts: Vec<Constraint2> = vec![];
+            let mut contacts: Vec<ConstraintBox> = vec![];
 
             for i in 0..particles {
                 for j in i + 1..particles {
                     let pi = position[i];
                     let pj = position[j];
                     if (pi.linear - pj.linear).norm() <= 1.0 {
-                        contacts.push(Constraint2 {
-                            targets: [i, j],
-                            constraint: Box::new(Contact {
-                                normal: (pi.linear - pj.linear).normalize(),
+                        contacts.push(ConstraintBox::new(
+                            [i, j],
+                            Contact {
+                                normal: (pi.linear - pj.linear).normalize().transpose(),
                                 stiffness: 10000.0,
                                 length: 1.0,
-                            }),
-                        });
+                            },
+                        ));
                     }
                 }
             }
-            for _iter in 0..1 {
+            for _iter in 0..10 {
                 let mut forces = vec![Force::default(); particles];
                 let mut grad2_diag = vec![Split::<Vector3, Vector3>::default(); particles];
 
-                for Constraint2 {
+                for ConstraintBox {
                     targets,
                     constraint,
                 } in constraints.iter().chain(&contacts)
                 {
-                    let [i, j] = *targets;
-                    let pi = position[i];
-                    let pj = position[j];
-                    let p = [pi, pj];
-                    let force = constraint.force(p);
-                    let grad2 = constraint.grad2_diag(p);
-                    forces[i] += force[0];
-                    forces[j] += force[1];
-                    grad2_diag[i] += grad2[0];
-                    grad2_diag[j] += grad2[1];
+                    let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
+
+                    let force = constraint.force(&p);
+                    let grad2 = constraint.grad2_diag(&p);
+                    for (i, &j) in targets.iter().enumerate() {
+                        forces[j] += force[i];
+                        grad2_diag[j] += grad2[i];
+                    }
                 }
                 let mut preconditioner_diag = vec![Split::<Vector3, Vector3>::default(); particles];
                 for i in 0..particles {
