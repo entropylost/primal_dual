@@ -221,8 +221,8 @@ async fn main() {
         .map(Split::from_linear)
         .collect();
     let mut velocity: Vec<Velocity> = vec![
-        Split::new(vector![0.1, 0.0, 0.0], vector![0.0, 0.0, 0.1]),
-        Split::new(vector![-0.1, 0.0, 0.0], vector![0.0, 0.0, -0.1]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 1.0]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, -1.0]),
     ];
     let mass: Vec<Mass> = vec![1.0, 1.0]
         .into_iter()

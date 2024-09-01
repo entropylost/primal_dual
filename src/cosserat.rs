@@ -7,6 +7,7 @@ pub struct CosseratRod {
     pub shear_modulus: f32,
     pub length: f32,
     pub rest_rotation: UnitQuaternion,
+    pub inv_rest_rotation: UnitQuaternion,
 }
 impl CosseratRod {
     pub fn resting_state(
@@ -18,12 +19,22 @@ impl CosseratRod {
         let length = (pj.linear - pi.linear).norm();
         let rest_rotation =
             UnitQuaternion::rotation_between(&Vector3::z(), &(pj.linear - pi.linear)).unwrap();
+        let inv_rest_rotation =
+            UnitQuaternion::rotation_between(&Vector3::z(), &(pi.linear - pj.linear)).unwrap();
         Self {
             radius: rod_radius,
             young_modulus,
             shear_modulus,
             length,
             rest_rotation,
+            inv_rest_rotation,
+        }
+    }
+    fn reverse(self) -> Self {
+        Self {
+            rest_rotation: self.inv_rest_rotation,
+            inv_rest_rotation: self.rest_rotation,
+            ..self
         }
     }
     fn stretch_shear_diag(self) -> Vector3 {
@@ -162,18 +173,19 @@ impl CosseratStretchShear {
 
 impl Constraint<2, 3> for CosseratStretchShear {
     fn value(&self, p: [Position; 2]) -> Vector3 {
-        let strain = self.strain_measure(p);
-        strain * (self.length / 2.0).sqrt()
+        self.strain_measure(p)
     }
     fn gradient(&self, p @ [pi, pj]: [Position; 2]) -> [Gradient<3>; 2] {
         let strain = self.strain_measure(p);
         let grad_lin = self.strain_gradient_lin(p);
         let grad_ang = self.strain_gradient_ang(p);
-        let grad = Split::new(grad_lin, grad_ang);
-        [grad, -grad]
+        [
+            Split::new(grad_lin, grad_ang),
+            Split::new(-grad_lin, grad_ang),
+        ]
     }
     fn stiffness(&self) -> SVector<f32, 3> {
-        self.stretch_shear_diag()
+        self.stretch_shear_diag() * self.length
     }
 }
 
@@ -227,16 +239,16 @@ impl CosseratBendTwist {
 
 impl Constraint<2, 3> for CosseratBendTwist {
     fn value(&self, p: [Position; 2]) -> Vector3 {
-        let darboux = self.darboux_vector(p);
-        darboux * (self.length / 2.0).sqrt()
+        self.darboux_vector(p)
     }
     fn gradient(&self, p @ [pi, pj]: [Position; 2]) -> [Gradient<3>; 2] {
-        let grad_lin = Matrix3::zeros();
         let grad_ang = self.darboux_gradient_ang(p);
-        let grad = Split::new(grad_lin, grad_ang);
-        [grad, -grad]
+        [
+            Split::from_angular(grad_ang),
+            Split::from_angular(-grad_ang),
+        ]
     }
     fn stiffness(&self) -> SVector<f32, 3> {
-        self.bend_twist_diag()
+        self.bend_twist_diag() * self.length
     }
 }
