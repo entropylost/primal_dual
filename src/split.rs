@@ -2,6 +2,8 @@ use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssi
 
 use nalgebra::SMatrix;
 
+use crate::Real;
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct Split<A, B> {
     pub(crate) linear: A,
@@ -148,22 +150,22 @@ where
     }
 }
 
-impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize> Mul<f32>
-    for Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>
+impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize> Mul<Real>
+    for Split<SMatrix<Real, R1, C1>, SMatrix<Real, R2, C2>>
 {
     type Output = Self;
-    fn mul(self, rhs: f32) -> Self {
+    fn mul(self, rhs: Real) -> Self {
         Self {
             linear: self.linear * rhs,
             angular: self.angular * rhs,
         }
     }
 }
-impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize> Div<f32>
-    for Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>
+impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize> Div<Real>
+    for Split<SMatrix<Real, R1, C1>, SMatrix<Real, R2, C2>>
 {
     type Output = Self;
-    fn div(self, rhs: f32) -> Self {
+    fn div(self, rhs: Real) -> Self {
         Self {
             linear: self.linear / rhs,
             angular: self.angular / rhs,
@@ -171,10 +173,10 @@ impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize> Div<f32
     }
 }
 impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
-    Mul<Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>> for f32
+    Mul<Split<SMatrix<Real, R1, C1>, SMatrix<Real, R2, C2>>> for Real
 {
-    type Output = Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>;
-    fn mul(self, rhs: Split<SMatrix<f32, R1, C1>, SMatrix<f32, R2, C2>>) -> Self::Output {
+    type Output = Split<SMatrix<Real, R1, C1>, SMatrix<Real, R2, C2>>;
+    fn mul(self, rhs: Split<SMatrix<Real, R1, C1>, SMatrix<Real, R2, C2>>) -> Self::Output {
         Split {
             linear: self * rhs.linear,
             angular: self * rhs.angular,

@@ -3,8 +3,8 @@ use super::*;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Rod {
     pub(crate) normal: RVector3,
-    pub(crate) stiffness: f32,
-    pub(crate) length: f32,
+    pub(crate) stiffness: Real,
+    pub(crate) length: Real,
 }
 impl Constraint<2, 1> for Rod {
     fn value(&self, [pi, pj]: [Position; 2]) -> Scalar {
@@ -25,8 +25,8 @@ impl Constraint<2, 1> for Rod {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Contact {
     pub(crate) normal: RVector3,
-    pub(crate) stiffness: f32,
-    pub(crate) length: f32,
+    pub(crate) stiffness: Real,
+    pub(crate) length: Real,
 }
 impl Constraint<2, 1> for Contact {
     fn value(&self, [pi, pj]: [Position; 2]) -> Scalar {
@@ -46,8 +46,8 @@ impl Constraint<2, 1> for Contact {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RadialContact {
-    pub(crate) stiffness: f32,
-    pub(crate) length: f32,
+    pub(crate) stiffness: Real,
+    pub(crate) length: Real,
 }
 impl Constraint<2, 1> for RadialContact {
     fn value(&self, [pi, pj]: [Position; 2]) -> Scalar {

@@ -11,3 +11,4 @@ rand = "0.8.5"
 luisa_compute = { git = "https://github.com/iMplode-nZ/luisa-compute-rs", features = [
     "nalgebra",
 ] }
+iter_fixed = "0.4.0"

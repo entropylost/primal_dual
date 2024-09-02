@@ -724,6 +724,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "iter_fixed"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "592ff74cdc6a923b2ae357dad7db2f5dcbf5d4ace9afcf3ab7c7f20b209fd949"
+
+[[package]]
 name = "itoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1256,6 +1262,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 name = "pbd_test2"
 version = "0.1.0"
 dependencies = [
+ "iter_fixed",
  "luisa_compute",
  "macroquad",
  "nalgebra",

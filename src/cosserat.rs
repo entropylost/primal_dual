@@ -2,18 +2,18 @@ use super::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CosseratRod {
-    pub radius: f32,
-    pub young_modulus: f32,
-    pub shear_modulus: f32,
-    pub length: f32,
+    pub radius: Real,
+    pub young_modulus: Real,
+    pub shear_modulus: Real,
+    pub length: Real,
     pub rest_rotation: UnitQuaternion,
     pub inv_rest_rotation: UnitQuaternion,
 }
 impl CosseratRod {
     pub fn resting_state(
-        rod_radius: f32,
-        young_modulus: f32,
-        shear_modulus: f32,
+        rod_radius: Real,
+        young_modulus: Real,
+        shear_modulus: Real,
         [pi, pj]: [Position; 2],
     ) -> Self {
         let length = (pj.linear - pi.linear).norm();
@@ -46,12 +46,12 @@ impl CosseratRod {
             self.young_modulus * s,
         )
     }
-    fn stretch_shear_a(self) -> f32 {
+    fn stretch_shear_a(self) -> Real {
         let s = PI * self.radius.powi(2);
         let a = 5.0 / 6.0 * s;
         self.shear_modulus * a
     }
-    fn stretch_shear_b(self) -> f32 {
+    fn stretch_shear_b(self) -> Real {
         let s = PI * self.radius.powi(2);
         self.young_modulus * s - self.stretch_shear_a()
     }
@@ -95,7 +95,7 @@ impl Deref for CosseratStretchShear {
 fn rmul_mat(q: Quaternion) -> Matrix4 {
     stack![
         Matrix3::from_diagonal_element(q.scalar()) - cross_matrix(q.vector().into()), q.vector();
-        -q.vector().transpose(), na::Matrix1::<f32>::new(q.scalar())
+        -q.vector().transpose(), na::Matrix1::<Real>::new(q.scalar())
     ]
 }
 
@@ -103,7 +103,7 @@ fn rmul_mat(q: Quaternion) -> Matrix4 {
 fn lmul_mat(p: Quaternion) -> Matrix4 {
     stack![
         Matrix3::from_diagonal_element(p.scalar()) + cross_matrix(p.vector().into()), p.vector();
-         -p.vector().transpose(), na::Matrix1::<f32>::new(p.scalar())
+         -p.vector().transpose(), na::Matrix1::<Real>::new(p.scalar())
     ]
 }
 
@@ -184,7 +184,7 @@ impl Constraint<2, 3> for CosseratStretchShear {
             Split::new(-grad_lin, grad_ang),
         ]
     }
-    fn stiffness(&self) -> SVector<f32, 3> {
+    fn stiffness(&self) -> SVector<Real, 3> {
         self.stretch_shear_diag() * self.length
     }
 }
@@ -248,7 +248,7 @@ impl Constraint<2, 3> for CosseratBendTwist {
             Split::from_angular(-grad_ang),
         ]
     }
-    fn stiffness(&self) -> SVector<f32, 3> {
+    fn stiffness(&self) -> SVector<Real, 3> {
         self.bend_twist_diag() * self.length
     }
 }
