@@ -10,7 +10,6 @@ use nalgebra::{self as na, matrix, stack, vector, Matrix, MatrixXx3, MatrixXx4, 
 use std::fmt::Debug;
 use std::{f32::consts::PI, ops::Deref};
 
-mod opt;
 mod split;
 use split::Split;
 mod contact;
@@ -284,7 +283,7 @@ async fn main() {
         .map(Split::from_linear)
         .collect();
     let mut velocity: Vec<Velocity> = vec![
-        Split::new(vector![2.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
+        Split::new(vector![2.0, 1.0, 0.0], vector![0.0, 0.0, 0.0]),
         Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
     ];
     let mass: Vec<Mass> = vec![1.0, 1.0]
@@ -299,7 +298,7 @@ async fn main() {
     let num_iters = 1;
     let dt = 1.0 / 60.0;
     let substeps = 10;
-    let pbd = true;
+    let mut pbd = true;
 
     let dt = dt / substeps as Real;
     for v in &mut velocity {
@@ -309,7 +308,7 @@ async fn main() {
 
     let rod = CosseratRod::resting_state(
         0.5,
-        1.0 * dt * dt,
+        1.0 * dt * dt, // This makes the rod stiffness independent of time.
         1.0 * dt * dt,
         [position[0], position[1]],
     );
@@ -319,11 +318,20 @@ async fn main() {
         ConstraintBox::new([0, 1], CosseratBendTwist { rod }),
     ];
 
-    loop {
-        let running = macroquad::input::is_key_pressed(KeyCode::Period)
-            || macroquad::input::is_key_down(KeyCode::Space);
+    let mut running = false;
 
-        if running {
+    loop {
+        if macroquad::input::is_key_pressed(KeyCode::Space) {
+            running = !running;
+        }
+        if macroquad::input::is_key_pressed(KeyCode::Escape) {
+            break;
+        }
+        if macroquad::input::is_key_pressed(KeyCode::P) {
+            pbd = !pbd;
+        }
+
+        if running || macroquad::input::is_key_pressed(KeyCode::Period) {
             for _step in 0..substeps {
                 let last_position = position.clone();
                 let last_velocity = velocity.clone();
@@ -456,6 +464,15 @@ async fn main() {
             let offset = vector![200.0, 200.0];
 
             clear_background(BLACK);
+            if !running {
+                draw_text("Paused", screen_width() - 100.0, 30.0, 30.0, WHITE);
+            }
+            if pbd {
+                draw_text("Solver: PBD", 10.0, 30.0, 30.0, WHITE);
+            } else {
+                draw_text("Solver: PD", 10.0, 30.0, 30.0, WHITE);
+            }
+
             for p in &position {
                 let pos = p.linear.xy() * scaling + offset;
                 draw_circle(pos.x, pos.y, 0.5 * scaling, RED);

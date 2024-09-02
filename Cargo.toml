@@ -1,14 +1,10 @@
 [package]
-name = "pbd_test2"
+name = "primal_dual"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-macroquad = "0.4.11"
+macroquad = "0.4.13"
 nalgebra = { version = "0.33.0" }
 rand = "0.8.5"
-
-luisa_compute = { git = "https://github.com/iMplode-nZ/luisa-compute-rs", features = [
-    "nalgebra",
-] }
 iter_fixed = "0.4.0"
