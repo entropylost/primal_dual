@@ -164,8 +164,7 @@ trait Constraint<const N: usize, const V: usize>: Debug {
     fn grad2_diag(&self, positions: [Position; N]) -> [Split3; N] {
         self.jacobian(positions)
             .into_iter_fixed()
-            .zip(positions)
-            .map(|(jc, pos)| {
+            .map(|jc| {
                 Split::new(
                     (jc.linear.transpose() * Matrix::from_diagonal(&self.stiffness()) * jc.linear)
                         .diagonal(),
@@ -178,13 +177,13 @@ trait Constraint<const N: usize, const V: usize>: Debug {
             .collect()
     }
     fn preconditioner_diag(&self, positions: [Position; N], masses: [Mass; N]) -> SVector<Real, V> {
-        let denom = self.stiffness().map(|x| 1.0 / x)
+        let denom = self.stiffness().map(Real::recip)
             + self
                 .jacobian(positions)
                 .into_iter_fixed()
                 .zip(masses)
                 .map(|(jc, mass)| {
-                    (jc.linear * (1.0 / mass.linear) * jc.linear.transpose()).diagonal()
+                    (jc.linear * mass.linear.recip() * jc.linear.transpose()).diagonal()
                         + (jc.angular
                             * mass.angular.try_inverse().unwrap()
                             * jc.angular.transpose())
@@ -192,7 +191,7 @@ trait Constraint<const N: usize, const V: usize>: Debug {
                 })
                 .into_iter()
                 .fold(SVector::zeros(), |acc, x| acc + x);
-        denom.map(|x| 1.0 / x)
+        denom.map(Real::recip)
     }
 }
 
@@ -402,7 +401,7 @@ async fn main() {
                             dual_vars[i] += &delta;
                             let jacobian = constraint.jacobian(&p);
                             for (j, &k) in targets.iter().enumerate() {
-                                velocity[k].linear += (1.0 / mass[k].linear)
+                                velocity[k].linear += mass[k].linear.recip()
                                     * jacobian[j].linear.transpose()
                                     * &delta;
                                 velocity[k].angular += mass[k].angular.try_inverse().unwrap()
@@ -433,28 +432,18 @@ async fn main() {
                                 grad2_diag[j] += grad2[i];
                             }
                         }
-                        let mut preconditioner_diag = (0..particles)
+                        let step = (0..particles)
                             .map(|i| {
-                                Split::new(
-                                    (Vector3::repeat(mass[i].linear) + grad2_diag[i].linear)
-                                        .map(|x| 1.0 / x),
-                                    (mass[i].angular.diagonal() + grad2_diag[i].angular)
-                                        .map(|x| 1.0 / x),
+                                let precond = Split::new(
+                                    Vector3::repeat(mass[i].linear) + grad2_diag[i].linear,
+                                    mass[i].angular.diagonal() + grad2_diag[i].angular,
                                 )
+                                .recip();
+                                let grad = mass[i] * (velocity[i] - last_velocity[i]) - forces[i];
+                                precond.component_mul(grad)
                             })
                             .collect::<Vec<_>>();
-                        let gradient = (0..particles)
-                            .map(|i| mass[i] * (velocity[i] - last_velocity[i]) - forces[i])
-                            .collect::<Vec<_>>();
-                        for i in 0..particles {
-                            let step = Split {
-                                linear: preconditioner_diag[i]
-                                    .linear
-                                    .component_mul(&gradient[i].linear),
-                                angular: preconditioner_diag[i]
-                                    .angular
-                                    .component_mul(&gradient[i].angular),
-                            };
+                        for (i, step) in step.into_iter().enumerate() {
                             velocity[i] -= constraint_step * step;
                         }
                         for i in 0..particles {

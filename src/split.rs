@@ -183,3 +183,25 @@ impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
         }
     }
 }
+impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
+    Split<SMatrix<Real, R1, C1>, SMatrix<Real, R2, C2>>
+{
+    pub fn recip(self) -> Self {
+        Self {
+            linear: self.linear.map(Real::recip),
+            angular: self.angular.map(Real::recip),
+        }
+    }
+    pub fn component_mul(self, rhs: Self) -> Self {
+        Self {
+            linear: self.linear.component_mul(&rhs.linear),
+            angular: self.angular.component_mul(&rhs.angular),
+        }
+    }
+    pub fn component_div(self, rhs: Self) -> Self {
+        Self {
+            linear: self.linear.component_div(&rhs.linear),
+            angular: self.angular.component_div(&rhs.angular),
+        }
+    }
+}

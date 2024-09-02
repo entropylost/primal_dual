@@ -26,7 +26,7 @@ impl CosseratRod {
             rest_rotation,
         }
     }
-    fn stretch_shear_diag(self) -> Vector3 {
+    fn stretch_shear(self) -> Vector3 {
         let s = PI * self.radius.powi(2);
         let a = 5.0 / 6.0 * s;
         Vector3::new(
@@ -35,19 +35,7 @@ impl CosseratRod {
             self.young_modulus * s,
         )
     }
-    fn stretch_shear_a(self) -> Real {
-        let s = PI * self.radius.powi(2);
-        let a = 5.0 / 6.0 * s;
-        self.shear_modulus * a
-    }
-    fn stretch_shear_b(self) -> Real {
-        let s = PI * self.radius.powi(2);
-        self.young_modulus * s - self.stretch_shear_a()
-    }
-    fn stretch_shear(self) -> Matrix3 {
-        Matrix3::from_diagonal(&self.stretch_shear_diag())
-    }
-    fn bend_twist_diag(self) -> Vector3 {
+    fn bend_twist(self) -> Vector3 {
         let i = PI * self.radius.powi(4) / 4.0;
         let j = PI * self.radius.powi(4) / 2.0;
         Vector3::new(
@@ -55,9 +43,6 @@ impl CosseratRod {
             self.young_modulus * i,
             self.shear_modulus * j,
         )
-    }
-    fn bend_twist(self) -> Matrix3 {
-        Matrix3::from_diagonal(&self.bend_twist_diag())
     }
     fn center_rotation(self, [pi, pj]: [Position; 2]) -> UnitQuaternion {
         pi.angular.nlerp(&pj.angular, 0.5)
@@ -164,8 +149,7 @@ impl Constraint<2, 3> for CosseratStretchShear {
     fn value(&self, p: [Position; 2]) -> Vector3 {
         self.strain_measure(p)
     }
-    fn gradient(&self, p @ [pi, pj]: [Position; 2]) -> [Gradient<3>; 2] {
-        let strain = self.strain_measure(p);
+    fn gradient(&self, p: [Position; 2]) -> [Gradient<3>; 2] {
         let grad_lin = self.strain_gradient_lin(p);
         let grad_ang = self.strain_gradient_ang(p);
         [
@@ -174,7 +158,7 @@ impl Constraint<2, 3> for CosseratStretchShear {
         ]
     }
     fn stiffness(&self) -> SVector<Real, 3> {
-        self.stretch_shear_diag() * self.length
+        self.stretch_shear() * self.length
     }
 }
 
@@ -230,7 +214,7 @@ impl Constraint<2, 3> for CosseratBendTwist {
     fn value(&self, p: [Position; 2]) -> Vector3 {
         self.darboux_vector(p)
     }
-    fn gradient(&self, p @ [pi, pj]: [Position; 2]) -> [Gradient<3>; 2] {
+    fn gradient(&self, p: [Position; 2]) -> [Gradient<3>; 2] {
         let grad_ang = self.darboux_gradient_ang(p);
         [
             Split::from_angular(grad_ang),
@@ -238,6 +222,6 @@ impl Constraint<2, 3> for CosseratBendTwist {
         ]
     }
     fn stiffness(&self) -> SVector<Real, 3> {
-        self.bend_twist_diag() * self.length
+        self.bend_twist() * self.length
     }
 }
