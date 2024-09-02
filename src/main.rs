@@ -6,6 +6,7 @@ use contact::Contact;
 use cosserat::{CosseratBendTwist, CosseratRod, CosseratStretchShear};
 use iter_fixed::IntoIteratorFixed;
 use macroquad::input::KeyCode;
+use macroquad::window::request_new_screen_size;
 use nalgebra::{self as na, matrix, stack, vector, Matrix, MatrixXx3, MatrixXx4, SMatrix, SVector};
 use std::fmt::Debug;
 use std::{f32::consts::PI, ops::Deref};
@@ -276,17 +277,31 @@ impl ConstraintBox {
     }
 }
 
-#[macroquad::main("Pbd")]
+#[macroquad::main("Primal / Dual")]
 async fn main() {
-    let mut position: Vec<Position> = vec![vector![0.0, 0.0, 0.0], vector![2.0, 0.0, 0.0]]
-        .into_iter()
-        .map(Split::from_linear)
-        .collect();
+    request_new_screen_size(1000.0, 800.0);
+
+    let mut position: Vec<Position> = vec![
+        vector![0.0, 0.0, 0.0],
+        vector![2.0, 0.0, 0.0],
+        vector![4.0, 0.0, 0.0],
+        vector![6.0, 0.0, 0.0],
+        vector![8.0, 0.0, 0.0],
+        vector![8.0, -3.0, 0.0],
+    ]
+    .into_iter()
+    .map(Split::from_linear)
+    .collect();
     let mut velocity: Vec<Velocity> = vec![
-        Split::new(vector![2.0, 1.0, 0.0], vector![0.0, 0.0, 0.0]),
         Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
+        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
+        Split::new(vector![0.0, 2.0, 0.0], vector![0.0, 0.0, 0.0]),
     ];
-    let mass: Vec<Mass> = vec![1.0, 1.0]
+    // TODO: Setting it to infinity is not supported yet.
+    let mass: Vec<Mass> = vec![9999999.0, 1.0, 1.0, 1.0, 1.0, 5.0]
         .into_iter()
         .map(|x| Split::new(x, Matrix3::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
         .collect();
@@ -298,7 +313,7 @@ async fn main() {
     let num_iters = 1;
     let dt = 1.0 / 60.0;
     let substeps = 10;
-    let mut pbd = true;
+    let mut dual = true;
 
     let dt = dt / substeps as Real;
     for v in &mut velocity {
@@ -308,14 +323,20 @@ async fn main() {
 
     let rod = CosseratRod::resting_state(
         0.5,
-        1.0 * dt * dt, // This makes the rod stiffness independent of time.
-        1.0 * dt * dt,
+        10000.0 * dt * dt, // This makes the rod stiffness independent of time.
+        10000.0 * dt * dt,
         [position[0], position[1]],
     );
 
     let mut constraints = vec![
         ConstraintBox::new([0, 1], CosseratStretchShear { rod }),
         ConstraintBox::new([0, 1], CosseratBendTwist { rod }),
+        ConstraintBox::new([1, 2], CosseratStretchShear { rod }),
+        ConstraintBox::new([1, 2], CosseratBendTwist { rod }),
+        ConstraintBox::new([2, 3], CosseratStretchShear { rod }),
+        ConstraintBox::new([2, 3], CosseratBendTwist { rod }),
+        ConstraintBox::new([3, 4], CosseratStretchShear { rod }),
+        ConstraintBox::new([3, 4], CosseratBendTwist { rod }),
     ];
 
     let mut running = false;
@@ -328,7 +349,7 @@ async fn main() {
             break;
         }
         if macroquad::input::is_key_pressed(KeyCode::P) {
-            pbd = !pbd;
+            dual = !dual;
         }
 
         if running || macroquad::input::is_key_pressed(KeyCode::Period) {
@@ -357,7 +378,7 @@ async fn main() {
                         }
                     }
                 }
-                if pbd {
+                if dual {
                     let mut dual_vars = constraints
                         .iter()
                         .map(|x| DVector::zeros(x.constraint.dim_v()))
@@ -461,16 +482,16 @@ async fn main() {
         {
             use macroquad::prelude::*;
             let scaling = 50.0;
-            let offset = vector![200.0, 200.0];
+            let offset = vector![screen_width() / 2.0, screen_height() / 2.0];
 
             clear_background(BLACK);
             if !running {
                 draw_text("Paused", screen_width() - 100.0, 30.0, 30.0, WHITE);
             }
-            if pbd {
-                draw_text("Solver: PBD", 10.0, 30.0, 30.0, WHITE);
+            if dual {
+                draw_text("Solver: Dual", 10.0, 30.0, 30.0, WHITE);
             } else {
-                draw_text("Solver: PD", 10.0, 30.0, 30.0, WHITE);
+                draw_text("Solver: Primal", 10.0, 30.0, 30.0, WHITE);
             }
 
             for p in &position {

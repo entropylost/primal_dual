@@ -7,7 +7,6 @@ pub struct CosseratRod {
     pub shear_modulus: Real,
     pub length: Real,
     pub rest_rotation: UnitQuaternion,
-    pub inv_rest_rotation: UnitQuaternion,
 }
 impl CosseratRod {
     pub fn resting_state(
@@ -19,22 +18,12 @@ impl CosseratRod {
         let length = (pj.linear - pi.linear).norm();
         let rest_rotation =
             UnitQuaternion::rotation_between(&Vector3::z(), &(pj.linear - pi.linear)).unwrap();
-        let inv_rest_rotation =
-            UnitQuaternion::rotation_between(&Vector3::z(), &(pi.linear - pj.linear)).unwrap();
         Self {
             radius: rod_radius,
             young_modulus,
             shear_modulus,
             length,
             rest_rotation,
-            inv_rest_rotation,
-        }
-    }
-    fn reverse(self) -> Self {
-        Self {
-            rest_rotation: self.inv_rest_rotation,
-            inv_rest_rotation: self.rest_rotation,
-            ..self
         }
     }
     fn stretch_shear_diag(self) -> Vector3 {
