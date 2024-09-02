@@ -398,30 +398,16 @@ async fn main() {
                             let dual_force = -constraint.value(&p)
                                 - last_dual_vars[i].component_div(&constraint.stiffness());
                             let precond = constraint.preconditioner_diag(&p, &m);
-                            dual_vars[i] += constraint_step * dual_force.component_mul(&precond);
-                        }
-                        let delta = dual_vars
-                            .iter()
-                            .zip(last_dual_vars)
-                            .map(|(x, y)| x - y)
-                            .collect::<Vec<_>>();
-                        for (
-                            i,
-                            ConstraintBox {
-                                targets,
-                                constraint,
-                            },
-                        ) in constraints.iter().enumerate()
-                        {
-                            let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
+                            let delta = constraint_step * dual_force.component_mul(&precond);
+                            dual_vars[i] += &delta;
                             let jacobian = constraint.jacobian(&p);
                             for (j, &k) in targets.iter().enumerate() {
                                 velocity[k].linear += (1.0 / mass[k].linear)
                                     * jacobian[j].linear.transpose()
-                                    * &delta[i];
+                                    * &delta;
                                 velocity[k].angular += mass[k].angular.try_inverse().unwrap()
                                     * jacobian[j].angular.transpose()
-                                    * &delta[i];
+                                    * &delta;
                             }
                         }
                         for i in 0..particles {
