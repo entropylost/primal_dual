@@ -1,5 +1,4 @@
 // Hack to deal with nalgebra stack being slightly broken.
-// TODO: File report.
 #![allow(clippy::toplevel_ref_arg)]
 #![allow(unused)]
 
@@ -285,7 +284,7 @@ async fn main() {
         .map(Split::from_linear)
         .collect();
     let mut velocity: Vec<Velocity> = vec![
-        Split::new(vector![0.1, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
+        Split::new(vector![2.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
         Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
     ];
     let mass: Vec<Mass> = vec![1.0, 1.0]
@@ -296,149 +295,160 @@ async fn main() {
     assert_eq!(particles, velocity.len());
     assert_eq!(particles, mass.len());
 
-    let bt = CosseratBendTwist {
-        rod: CosseratRod::resting_state(0.5, 1.0, 1.0, [position[0], position[1]]),
-    };
-    let se = CosseratStretchShear {
-        rod: CosseratRod::resting_state(0.5, 1.0, 1.0, [position[0], position[1]]),
-    };
+    let constraint_step = 1.0;
+    let num_iters = 1;
+    let dt = 1.0 / 60.0;
+    let substeps = 10;
+    let pbd = true;
+
+    let dt = dt / substeps as Real;
+    for v in &mut velocity {
+        v.linear *= dt;
+        v.angular *= dt;
+    }
+
+    let rod = CosseratRod::resting_state(
+        0.5,
+        1.0 * dt * dt,
+        1.0 * dt * dt,
+        [position[0], position[1]],
+    );
 
     let mut constraints = vec![
-        ConstraintBox::new([0, 1], se),
-        ConstraintBox::new([0, 1], bt),
+        ConstraintBox::new([0, 1], CosseratStretchShear { rod }),
+        ConstraintBox::new([0, 1], CosseratBendTwist { rod }),
     ];
-
-    let constraint_step = 1.0;
-    let num_iters = 10;
-
-    let pbd = true;
 
     loop {
         let running = macroquad::input::is_key_pressed(KeyCode::Period)
             || macroquad::input::is_key_down(KeyCode::Space);
 
         if running {
-            let last_position = position.clone();
-            let last_velocity = velocity.clone();
-            for i in 0..particles {
-                position[i] = position[i].step(velocity[i]);
-            }
+            for _step in 0..substeps {
+                let last_position = position.clone();
+                let last_velocity = velocity.clone();
+                for i in 0..particles {
+                    position[i] = position[i].step(velocity[i]);
+                }
 
-            let lasting_constraints = constraints.len();
+                let lasting_constraints = constraints.len();
 
-            for i in 0..particles {
-                for j in i + 1..particles {
-                    let pi = position[i];
-                    let pj = position[j];
-                    if (pi.linear - pj.linear).norm() <= 1.0 {
-                        constraints.push(ConstraintBox::new(
-                            [i, j],
-                            Contact {
-                                normal: (pi.linear - pj.linear).normalize().transpose(),
-                                stiffness: Real::INFINITY,
-                                length: 1.0,
-                            },
-                        ));
+                for i in 0..particles {
+                    for j in i + 1..particles {
+                        let pi = position[i];
+                        let pj = position[j];
+                        if (pi.linear - pj.linear).norm() <= 1.0 {
+                            constraints.push(ConstraintBox::new(
+                                [i, j],
+                                Contact {
+                                    normal: (pi.linear - pj.linear).normalize().transpose(),
+                                    stiffness: Real::INFINITY * dt * dt,
+                                    length: 1.0,
+                                },
+                            ));
+                        }
                     }
                 }
-            }
-            if pbd {
-                let mut dual_vars = constraints
-                    .iter()
-                    .map(|x| DVector::zeros(x.constraint.dim_v()))
-                    .collect::<Vec<_>>();
-                for _iter in 0..num_iters {
-                    let last_dual_vars = dual_vars.clone();
-                    for (
-                        i,
-                        ConstraintBox {
-                            targets,
-                            constraint,
-                        },
-                    ) in constraints.iter().enumerate()
-                    {
-                        let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
-                        let m = targets.iter().map(|&i| mass[i]).collect::<Vec<_>>();
-                        let dual_force = -constraint.value(&p)
-                            - last_dual_vars[i].component_div(&constraint.stiffness());
-                        let precond = constraint.preconditioner_diag(&p, &m);
-                        dual_vars[i] += constraint_step * dual_force.component_mul(&precond);
-                    }
-                    let delta = dual_vars
+                if pbd {
+                    let mut dual_vars = constraints
                         .iter()
-                        .zip(last_dual_vars)
-                        .map(|(x, y)| x - y)
+                        .map(|x| DVector::zeros(x.constraint.dim_v()))
                         .collect::<Vec<_>>();
-                    for (
-                        i,
-                        ConstraintBox {
+                    for _iter in 0..num_iters {
+                        let last_dual_vars = dual_vars.clone();
+                        for (
+                            i,
+                            ConstraintBox {
+                                targets,
+                                constraint,
+                            },
+                        ) in constraints.iter().enumerate()
+                        {
+                            let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
+                            let m = targets.iter().map(|&i| mass[i]).collect::<Vec<_>>();
+                            let dual_force = -constraint.value(&p)
+                                - last_dual_vars[i].component_div(&constraint.stiffness());
+                            let precond = constraint.preconditioner_diag(&p, &m);
+                            dual_vars[i] += constraint_step * dual_force.component_mul(&precond);
+                        }
+                        let delta = dual_vars
+                            .iter()
+                            .zip(last_dual_vars)
+                            .map(|(x, y)| x - y)
+                            .collect::<Vec<_>>();
+                        for (
+                            i,
+                            ConstraintBox {
+                                targets,
+                                constraint,
+                            },
+                        ) in constraints.iter().enumerate()
+                        {
+                            let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
+                            let jacobian = constraint.jacobian(&p);
+                            for (j, &k) in targets.iter().enumerate() {
+                                velocity[k].linear += (1.0 / mass[k].linear)
+                                    * jacobian[j].linear.transpose()
+                                    * &delta[i];
+                                velocity[k].angular += mass[k].angular.try_inverse().unwrap()
+                                    * jacobian[j].angular.transpose()
+                                    * &delta[i];
+                            }
+                        }
+                        for i in 0..particles {
+                            position[i] = last_position[i].step(velocity[i]);
+                        }
+                    }
+                } else {
+                    for _iter in 0..num_iters {
+                        let mut forces = vec![Force::default(); particles];
+                        let mut grad2_diag = vec![Split::<Vector3, Vector3>::default(); particles];
+
+                        for ConstraintBox {
                             targets,
                             constraint,
-                        },
-                    ) in constraints.iter().enumerate()
-                    {
-                        let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
-                        let jacobian = constraint.jacobian(&p);
-                        for (j, &k) in targets.iter().enumerate() {
-                            velocity[k].linear +=
-                                (1.0 / mass[k].linear) * jacobian[j].linear.transpose() * &delta[i];
-                            velocity[k].angular += mass[k].angular.try_inverse().unwrap()
-                                * jacobian[j].angular.transpose()
-                                * &delta[i];
+                        } in &constraints
+                        {
+                            let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
+
+                            let force = constraint.force(&p);
+                            let grad2 = constraint.grad2_diag(&p);
+                            for (i, &j) in targets.iter().enumerate() {
+                                forces[j] += force[i];
+                                grad2_diag[j] += grad2[i];
+                            }
+                        }
+                        let mut preconditioner_diag = (0..particles)
+                            .map(|i| {
+                                Split::new(
+                                    (Vector3::repeat(mass[i].linear) + grad2_diag[i].linear)
+                                        .map(|x| 1.0 / x),
+                                    (mass[i].angular.diagonal() + grad2_diag[i].angular)
+                                        .map(|x| 1.0 / x),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let gradient = (0..particles)
+                            .map(|i| mass[i] * (velocity[i] - last_velocity[i]) - forces[i])
+                            .collect::<Vec<_>>();
+                        for i in 0..particles {
+                            let step = Split {
+                                linear: preconditioner_diag[i]
+                                    .linear
+                                    .component_mul(&gradient[i].linear),
+                                angular: preconditioner_diag[i]
+                                    .angular
+                                    .component_mul(&gradient[i].angular),
+                            };
+                            velocity[i] -= constraint_step * step;
+                        }
+                        for i in 0..particles {
+                            position[i] = last_position[i].step(velocity[i]);
                         }
                     }
-                    for i in 0..particles {
-                        position[i] = last_position[i].step(velocity[i]);
-                    }
                 }
-            } else {
-                for _iter in 0..num_iters {
-                    let mut forces = vec![Force::default(); particles];
-                    let mut grad2_diag = vec![Split::<Vector3, Vector3>::default(); particles];
-
-                    for ConstraintBox {
-                        targets,
-                        constraint,
-                    } in &constraints
-                    {
-                        let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
-
-                        let force = constraint.force(&p);
-                        let grad2 = constraint.grad2_diag(&p);
-                        for (i, &j) in targets.iter().enumerate() {
-                            forces[j] += force[i];
-                            grad2_diag[j] += grad2[i];
-                        }
-                    }
-                    let mut preconditioner_diag =
-                        vec![Split::<Vector3, Vector3>::default(); particles];
-                    for i in 0..particles {
-                        preconditioner_diag[i].linear = (Vector3::repeat(mass[i].linear)
-                            + grad2_diag[i].linear)
-                            .map(|x| 1.0 / x);
-                        preconditioner_diag[i].angular =
-                            (mass[i].angular.diagonal() + grad2_diag[i].angular).map(|x| 1.0 / x);
-                    }
-                    let gradient = (0..particles)
-                        .map(|i| mass[i] * (velocity[i] - last_velocity[i]) - forces[i])
-                        .collect::<Vec<_>>();
-                    for i in 0..particles {
-                        let step = Split {
-                            linear: preconditioner_diag[i]
-                                .linear
-                                .component_mul(&gradient[i].linear),
-                            angular: preconditioner_diag[i]
-                                .angular
-                                .component_mul(&gradient[i].angular),
-                        };
-                        velocity[i] -= constraint_step * step;
-                    }
-                    for i in 0..particles {
-                        position[i] = last_position[i].step(velocity[i]);
-                    }
-                }
+                constraints.truncate(lasting_constraints);
             }
-            constraints.truncate(lasting_constraints);
         }
         {
             use macroquad::prelude::*;
