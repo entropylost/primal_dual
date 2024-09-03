@@ -341,10 +341,10 @@ async fn main() {
     assert_eq!(particles, velocity.len());
     assert_eq!(particles, mass.len());
 
-    let constraint_step = 1.0;
+    let constraint_step = 0.5;
     let dt = 1.0 / 60.0;
     let substeps = 1;
-    let num_iters = 10;
+    let num_iters = 1;
     let mut dual = true;
     let mut dual_cheap_precond = true;
     let mut warm_start = false;
@@ -426,7 +426,7 @@ async fn main() {
                                 [i, j],
                                 Contact {
                                     normal: (pi.linear - pj.linear).normalize().transpose(),
-                                    stiffness: Real::INFINITY * dt * dt,
+                                    stiffness: 99999.0 * dt * dt,
                                     length: 1.0,
                                 },
                             ));
@@ -513,6 +513,9 @@ async fn main() {
                                 precond.component_mul(grad)
                             })
                             .collect::<Vec<_>>();
+                        for (i, step) in step.into_iter().enumerate() {
+                            velocity[i] -= constraint_step * step;
+                        }
                         for i in 0..particles {
                             position[i] = last_position[i].step(velocity[i]);
                         }
