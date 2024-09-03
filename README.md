@@ -8,4 +8,6 @@ Controls:
 * `[SPACE]`: Pause / Unpause
 * `.`: Step forward one frame
 * `P`: Toggle between primal and dual solvers
+* `C`: Toggle between using exact and cheap preconditioners for the dual solver. The cheap preconditioner replaces the matrix inverse with the reciprocal of the diagonal, similar to the primal preconditioner.
+* `W`: Toggle warm starting for the primal solver - currently broken.
 * `[ESC]`: Exit

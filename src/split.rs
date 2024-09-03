@@ -186,12 +186,6 @@ impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
 impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
     Split<SMatrix<Real, R1, C1>, SMatrix<Real, R2, C2>>
 {
-    pub fn recip(self) -> Self {
-        Self {
-            linear: self.linear.map(Real::recip),
-            angular: self.angular.map(Real::recip),
-        }
-    }
     pub fn component_mul(self, rhs: Self) -> Self {
         Self {
             linear: self.linear.component_mul(&rhs.linear),
@@ -203,5 +197,49 @@ impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
             linear: self.linear.component_div(&rhs.linear),
             angular: self.angular.component_div(&rhs.angular),
         }
+    }
+}
+impl<A: Reciprocal, B: Reciprocal> Split<A, B> {
+    pub fn recip(self) -> Self {
+        Split {
+            linear: self.linear.reciprocal(),
+            angular: self.angular.reciprocal(),
+        }
+    }
+}
+
+pub trait Invertible {
+    fn inverse(self) -> Self;
+}
+impl Invertible for Real {
+    fn inverse(self) -> Self {
+        self.recip()
+    }
+}
+impl<const N: usize> Invertible for SMatrix<Real, N, N> {
+    fn inverse(self) -> Self {
+        self.try_inverse().unwrap()
+    }
+}
+impl<A: Invertible, B: Invertible> Invertible for Split<A, B> {
+    fn inverse(self) -> Self {
+        Split {
+            linear: self.linear.inverse(),
+            angular: self.angular.inverse(),
+        }
+    }
+}
+
+pub trait Reciprocal {
+    fn reciprocal(self) -> Self;
+}
+impl Reciprocal for Real {
+    fn reciprocal(self) -> Self {
+        self.recip()
+    }
+}
+impl<const R: usize, const C: usize> Reciprocal for SMatrix<Real, R, C> {
+    fn reciprocal(self) -> Self {
+        self.map(Real::recip)
     }
 }

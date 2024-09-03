@@ -14,7 +14,7 @@ use std::fmt::Debug;
 use std::{f32::consts::PI, ops::Deref};
 
 mod split;
-use split::Split;
+use split::{Invertible, Split};
 mod contact;
 mod cosserat;
 
@@ -179,7 +179,7 @@ trait Constraint<const N: usize, const V: usize>: Debug {
             })
             .collect()
     }
-    fn preconditioner_diag(
+    fn dual_preconditioner(
         &self,
         positions: [Position; N],
         masses: [Mass; N],
@@ -190,12 +190,30 @@ trait Constraint<const N: usize, const V: usize>: Debug {
                 .into_iter_fixed()
                 .zip(masses)
                 .map(|(jc, mass)| {
-                    jc.linear * mass.linear.recip() * jc.linear.transpose()
-                        + jc.angular * mass.angular.try_inverse().unwrap() * jc.angular.transpose()
+                    jc.linear * mass.linear.inverse() * jc.linear.transpose()
+                        + jc.angular * mass.angular.inverse() * jc.angular.transpose()
                 })
                 .into_iter()
                 .fold(SMatrix::zeros(), |acc, x| acc + x);
         denom.try_inverse().unwrap()
+    }
+    fn dual_cheap_preconditioner_diag(
+        &self,
+        positions: [Position; N],
+        masses: [Mass; N],
+    ) -> SVector<Real, V> {
+        let denom = self.stiffness().map(Real::recip)
+            + self
+                .jacobian(positions)
+                .into_iter_fixed()
+                .zip(masses)
+                .map(|(jc, mass)| {
+                    (jc.linear * mass.linear.inverse() * jc.linear.transpose()).diagonal()
+                        + (jc.angular * mass.angular.inverse() * jc.angular.transpose()).diagonal()
+                })
+                .into_iter()
+                .fold(SVector::zeros(), |acc, x| acc + x);
+        denom.map(Real::recip)
     }
 }
 
@@ -213,7 +231,8 @@ trait DynConstraint: Debug {
     fn force(&self, positions: &[Position]) -> Vec<Force>;
     fn grad2_diag(&self, positions: &[Position]) -> Vec<Split3>;
 
-    fn preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DMatrix;
+    fn dual_preconditioner(&self, positions: &[Position], mass: &[Mass]) -> DMatrix;
+    fn dual_cheap_preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector;
 }
 
 impl<const N: usize, const V: usize, X> DynConstraint for ConstraintWrapper<N, V, X>
@@ -254,12 +273,22 @@ where
         self.0.grad2_diag(positions.try_into().unwrap()).into()
     }
 
-    fn preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DMatrix {
+    fn dual_preconditioner(&self, positions: &[Position], mass: &[Mass]) -> DMatrix {
         let pc = self
             .0
-            .preconditioner_diag(positions.try_into().unwrap(), mass.try_into().unwrap());
+            .dual_preconditioner(positions.try_into().unwrap(), mass.try_into().unwrap());
         let v: DMatrixView<f32> = pc.as_view();
         v.clone_owned()
+    }
+    fn dual_cheap_preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector {
+        DVector::from_column_slice(
+            self.0
+                .dual_cheap_preconditioner_diag(
+                    positions.try_into().unwrap(),
+                    mass.try_into().unwrap(),
+                )
+                .as_slice(),
+        )
     }
 }
 
@@ -313,10 +342,14 @@ async fn main() {
     assert_eq!(particles, mass.len());
 
     let constraint_step = 1.0;
-    let num_iters = 1;
     let dt = 1.0 / 60.0;
-    let substeps = 10;
+    let substeps = 1;
+    let num_iters = 10;
     let mut dual = true;
+    let mut dual_cheap_precond = true;
+    let mut warm_start = false;
+    let warm_start_factor = 0.5;
+    let mut running = false;
 
     let dt = dt / substeps as Real;
     for v in &mut velocity {
@@ -342,7 +375,11 @@ async fn main() {
         ConstraintBox::new([3, 4], CosseratBendTwist { rod }),
     ];
 
-    let mut running = false;
+    let mut last_forces = vec![Force::default(); particles];
+    let mut last_dual_vars = constraints
+        .iter()
+        .map(|x| DVector::zeros(x.constraint.dim_v()))
+        .collect::<Vec<_>>();
 
     loop {
         if macroquad::input::is_key_pressed(KeyCode::Space) {
@@ -353,6 +390,21 @@ async fn main() {
         }
         if macroquad::input::is_key_pressed(KeyCode::P) {
             dual = !dual;
+        }
+        if macroquad::input::is_key_pressed(KeyCode::C) {
+            dual_cheap_precond = !dual_cheap_precond;
+        }
+        if macroquad::input::is_key_pressed(KeyCode::W) {
+            warm_start = !warm_start;
+        }
+        if macroquad::input::is_key_pressed(KeyCode::W)
+            || macroquad::input::is_key_pressed(KeyCode::P)
+        {
+            last_forces = vec![Force::default(); particles];
+            last_dual_vars = constraints
+                .iter()
+                .map(|x| DVector::zeros(x.constraint.dim_v()))
+                .collect::<Vec<_>>();
         }
 
         if running || macroquad::input::is_key_pressed(KeyCode::Period) {
@@ -400,15 +452,21 @@ async fn main() {
                             let m = targets.iter().map(|&i| mass[i]).collect::<Vec<_>>();
                             let dual_force = -constraint.value(&p)
                                 - last_dual_vars[i].component_div(&constraint.stiffness());
-                            let precond = constraint.preconditioner_diag(&p, &m);
+                            let precond = if dual_cheap_precond {
+                                DMatrix::from_diagonal(
+                                    &constraint.dual_cheap_preconditioner_diag(&p, &m),
+                                )
+                            } else {
+                                constraint.dual_preconditioner(&p, &m)
+                            };
                             let delta = constraint_step * precond * dual_force;
                             dual_vars[i] += &delta;
                             let jacobian = constraint.jacobian(&p);
                             for (j, &k) in targets.iter().enumerate() {
-                                velocity[k].linear += mass[k].linear.recip()
+                                velocity[k].linear += mass[k].linear.inverse()
                                     * jacobian[j].linear.transpose()
                                     * &delta;
-                                velocity[k].angular += mass[k].angular.try_inverse().unwrap()
+                                velocity[k].angular += mass[k].angular.inverse()
                                     * jacobian[j].angular.transpose()
                                     * &delta;
                             }
@@ -418,6 +476,14 @@ async fn main() {
                         }
                     }
                 } else {
+                    if warm_start {
+                        for i in 0..particles {
+                            velocity[i] += mass[i].inverse() * last_forces[i] * warm_start_factor;
+                        }
+                        for i in 0..particles {
+                            position[i] = last_position[i].step(velocity[i]);
+                        }
+                    }
                     for _iter in 0..num_iters {
                         let mut forces = vec![Force::default(); particles];
                         let mut grad2_diag = vec![Split::<Vector3, Vector3>::default(); particles];
@@ -447,11 +513,13 @@ async fn main() {
                                 precond.component_mul(grad)
                             })
                             .collect::<Vec<_>>();
-                        for (i, step) in step.into_iter().enumerate() {
-                            velocity[i] -= constraint_step * step;
-                        }
                         for i in 0..particles {
                             position[i] = last_position[i].step(velocity[i]);
+                        }
+                    }
+                    if warm_start {
+                        for i in 0..particles {
+                            last_forces[i] = mass[i] * (velocity[i] - last_velocity[i]);
                         }
                     }
                 }
@@ -469,6 +537,17 @@ async fn main() {
             }
             if dual {
                 draw_text("Solver: Dual", 10.0, 30.0, 30.0, WHITE);
+                draw_text(
+                    if dual_cheap_precond {
+                        "Preconditioner: Cheap"
+                    } else {
+                        "Preconditioner: Exact"
+                    },
+                    10.0,
+                    60.0,
+                    30.0,
+                    WHITE,
+                );
             } else {
                 draw_text("Solver: Primal", 10.0, 30.0, 30.0, WHITE);
             }
