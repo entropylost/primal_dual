@@ -7,7 +7,9 @@ use cosserat::{CosseratBendTwist, CosseratRod, CosseratStretchShear};
 use iter_fixed::IntoIteratorFixed;
 use macroquad::input::KeyCode;
 use macroquad::window::request_new_screen_size;
-use nalgebra::{self as na, matrix, stack, vector, Matrix, MatrixXx3, MatrixXx4, SMatrix, SVector};
+use nalgebra::{
+    self as na, matrix, stack, vector, DMatrixView, Matrix, MatrixXx3, MatrixXx4, SMatrix, SVector,
+};
 use std::fmt::Debug;
 use std::{f32::consts::PI, ops::Deref};
 
@@ -19,6 +21,7 @@ mod cosserat;
 type Real = f32;
 type Scalar = na::Matrix1<Real>;
 type DVector = na::DVector<Real>;
+type DMatrix = na::DMatrix<Real>;
 type Vector3 = na::Vector3<Real>;
 type RVector3 = na::RowVector3<Real>;
 type Matrix3 = na::Matrix3<Real>;
@@ -176,22 +179,23 @@ trait Constraint<const N: usize, const V: usize>: Debug {
             })
             .collect()
     }
-    fn preconditioner_diag(&self, positions: [Position; N], masses: [Mass; N]) -> SVector<Real, V> {
-        let denom = self.stiffness().map(Real::recip)
+    fn preconditioner_diag(
+        &self,
+        positions: [Position; N],
+        masses: [Mass; N],
+    ) -> SMatrix<Real, V, V> {
+        let denom = Matrix::from_diagonal(&self.stiffness().map(Real::recip))
             + self
                 .jacobian(positions)
                 .into_iter_fixed()
                 .zip(masses)
                 .map(|(jc, mass)| {
-                    (jc.linear * mass.linear.recip() * jc.linear.transpose()).diagonal()
-                        + (jc.angular
-                            * mass.angular.try_inverse().unwrap()
-                            * jc.angular.transpose())
-                        .diagonal()
+                    jc.linear * mass.linear.recip() * jc.linear.transpose()
+                        + jc.angular * mass.angular.try_inverse().unwrap() * jc.angular.transpose()
                 })
                 .into_iter()
-                .fold(SVector::zeros(), |acc, x| acc + x);
-        denom.map(Real::recip)
+                .fold(SMatrix::zeros(), |acc, x| acc + x);
+        denom.try_inverse().unwrap()
     }
 }
 
@@ -209,7 +213,7 @@ trait DynConstraint: Debug {
     fn force(&self, positions: &[Position]) -> Vec<Force>;
     fn grad2_diag(&self, positions: &[Position]) -> Vec<Split3>;
 
-    fn preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector;
+    fn preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DMatrix;
 }
 
 impl<const N: usize, const V: usize, X> DynConstraint for ConstraintWrapper<N, V, X>
@@ -250,12 +254,12 @@ where
         self.0.grad2_diag(positions.try_into().unwrap()).into()
     }
 
-    fn preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector {
-        DVector::from_column_slice(
-            self.0
-                .preconditioner_diag(positions.try_into().unwrap(), mass.try_into().unwrap())
-                .as_slice(),
-        )
+    fn preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DMatrix {
+        let pc = self
+            .0
+            .preconditioner_diag(positions.try_into().unwrap(), mass.try_into().unwrap());
+        let v: DMatrixView<f32> = pc.as_view();
+        v.clone_owned()
     }
 }
 
@@ -397,7 +401,7 @@ async fn main() {
                             let dual_force = -constraint.value(&p)
                                 - last_dual_vars[i].component_div(&constraint.stiffness());
                             let precond = constraint.preconditioner_diag(&p, &m);
-                            let delta = constraint_step * dual_force.component_mul(&precond);
+                            let delta = constraint_step * precond * dual_force;
                             dual_vars[i] += &delta;
                             let jacobian = constraint.jacobian(&p);
                             for (j, &k) in targets.iter().enumerate() {
