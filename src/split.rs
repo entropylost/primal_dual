@@ -5,7 +5,7 @@ use nalgebra::SMatrix;
 use crate::Real;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub(crate) struct Split<A = crate::Vector, B = crate::Vector> {
+pub(crate) struct Split<A = crate::Vector, B = Real> {
     pub(crate) linear: A,
     pub(crate) angular: B,
 }
@@ -150,6 +150,36 @@ where
     }
 }
 
+impl Mul<Split<Real, Real>> for Real {
+    type Output = Split<Real, Real>;
+    fn mul(self, rhs: Split<Real, Real>) -> Self::Output {
+        Split {
+            linear: self * rhs.linear,
+            angular: self * rhs.angular,
+        }
+    }
+}
+
+impl<const R1: usize, const C1: usize> Mul<Split<SMatrix<Real, R1, C1>, Real>> for Real {
+    type Output = Split<SMatrix<Real, R1, C1>, Real>;
+    fn mul(self, rhs: Split<SMatrix<Real, R1, C1>, Real>) -> Self::Output {
+        Split {
+            linear: self * rhs.linear,
+            angular: self * rhs.angular,
+        }
+    }
+}
+
+impl<const R1: usize, const C1: usize> Mul<Real> for Split<SMatrix<Real, R1, C1>, Real> {
+    type Output = Self;
+    fn mul(self, rhs: Real) -> Self {
+        Self {
+            linear: self.linear * rhs,
+            angular: self.angular * rhs,
+        }
+    }
+}
+
 impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize> Mul<Real>
     for Split<SMatrix<Real, R1, C1>, SMatrix<Real, R2, C2>>
 {
@@ -183,6 +213,22 @@ impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
         }
     }
 }
+
+impl<const R: usize, const C: usize> Split<SMatrix<Real, R, C>, Real> {
+    pub fn component_mul(self, rhs: Self) -> Self {
+        Self {
+            linear: self.linear.component_mul(&rhs.linear),
+            angular: self.angular * rhs.angular,
+        }
+    }
+    pub fn component_div(self, rhs: Self) -> Self {
+        Self {
+            linear: self.linear.component_div(&rhs.linear),
+            angular: self.angular / rhs.angular,
+        }
+    }
+}
+
 impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
     Split<SMatrix<Real, R1, C1>, SMatrix<Real, R2, C2>>
 {

@@ -8,7 +8,8 @@ use iter_fixed::IntoIteratorFixed;
 use macroquad::input::KeyCode;
 use macroquad::window::request_new_screen_size;
 use nalgebra::{
-    self as na, matrix, stack, vector, DMatrixView, Matrix, MatrixXx3, MatrixXx4, SMatrix, SVector,
+    self as na, matrix, stack, vector, DMatrixView, Matrix, MatrixXx1, MatrixXx2, MatrixXx3,
+    MatrixXx4, SMatrix, SVector,
 };
 use std::fmt::Debug;
 use std::{f32::consts::PI, ops::Deref};
@@ -22,24 +23,38 @@ type Real = f32;
 type Scalar = na::Matrix1<Real>;
 type DVector = na::DVector<Real>;
 type DMatrix = na::DMatrix<Real>;
-type Vector = na::Vector3<Real>;
-type RVector = na::RowVector3<Real>;
-type MatrixV = na::Matrix3<Real>;
-type MatrixVR = na::Matrix3x4<Real>;
-type MatrixRV = na::Matrix4x3<Real>;
-type MatrixR = na::Matrix4<Real>;
-type PartialRotation = na::Quaternion<Real>;
-type Rotation = na::UnitQuaternion<Real>;
+type Vector = na::Vector2<Real>;
+type RVector = na::RowVector2<Real>;
+type MatrixV = na::Matrix2<Real>;
+type MatrixVR = na::Matrix2<Real>;
+type MatrixRV = na::Matrix2<Real>;
+type MatrixR = na::Matrix2<Real>;
+
+type PartialRotation = Vector;
+type Rotation = Real;
 
 type Position = Split<Vector, Rotation>;
-type Displacement = Split<Vector, PartialRotation>;
-type Velocity = Split<Vector, Vector>;
-type Force = Split<Vector, Vector>;
-type Mass = Split<Real, MatrixV>;
-type Gradient<const V: usize> = Split<SMatrix<Real, V, 3>, SMatrix<Real, V, 4>>;
-type DGradient = Split<MatrixXx3<Real>, MatrixXx4<Real>>;
-type Jacobian<const V: usize> = Split<SMatrix<Real, V, 3>, SMatrix<Real, V, 3>>;
-type DJacobian = Split<MatrixXx3<Real>, MatrixXx3<Real>>;
+type Displacement = Split<Vector, Rotation>;
+type Velocity = Split<Vector, Real>;
+type Force = Split<Vector, Real>;
+type Mass = Split<Real, Real>;
+type Gradient<const V: usize> = Split<SMatrix<Real, V, 2>, SMatrix<Real, V, 1>>;
+type DGradient = Split<MatrixXx2<Real>, DVector>;
+type Jacobian<const V: usize> = Split<SMatrix<Real, V, 2>, SMatrix<Real, V, 1>>;
+type DJacobian = Split<MatrixXx2<Real>, DVector>;
+
+fn rotation_matrix(q: Rotation) -> MatrixR {
+    matrix![
+        q.cos(), -q.sin();
+        q.sin(), q.cos()
+    ]
+}
+fn rotation_matrix_gradient(q: Rotation) -> MatrixR {
+    matrix![
+        -q.sin(), -q.cos();
+        q.cos(), -q.sin()
+    ]
+}
 
 impl<const V: usize> Gradient<V> {
     fn dynamic(self) -> DGradient {
@@ -54,81 +69,40 @@ impl<const V: usize> Gradient<V> {
             .map(|x| x.clone_owned())
             .collect::<Vec<_>>();
         Split::new(
-            MatrixXx3::from_rows(&linear_rows),
-            MatrixXx4::from_rows(&angular_rows),
+            MatrixXx2::from_rows(&linear_rows),
+            MatrixXx1::from_rows(&angular_rows),
         )
     }
 }
 
-impl<const V: usize> Jacobian<V> {
-    fn dynamic(self) -> DJacobian {
-        let linear_rows = self
-            .linear
-            .row_iter()
-            .map(|x| x.clone_owned())
-            .collect::<Vec<_>>();
-        let angular_rows = self
-            .angular
-            .row_iter()
-            .map(|x| x.clone_owned())
-            .collect::<Vec<_>>();
-        Split::new(
-            MatrixXx3::from_rows(&linear_rows),
-            MatrixXx3::from_rows(&angular_rows),
-        )
-    }
-}
+// impl<const V: usize> Jacobian<V> {
+//     fn dynamic(self) -> DJacobian {
+//         let linear_rows = self
+//             .linear
+//             .row_iter()
+//             .map(|x| x.clone_owned())
+//             .collect::<Vec<_>>();
+//         let angular_rows = self
+//             .angular
+//             .row_iter()
+//             .map(|x| x.clone_owned())
+//             .collect::<Vec<_>>();
+//         Split::new(
+//             MatrixXx2::from_rows(&linear_rows),
+//             MatrixXx2::from_rows(&angular_rows),
+//         )
+//     }
+// }
 
 impl Position {
-    fn rotation_map(self) -> MatrixRV {
-        let q = self.angular.quaternion().as_vector() / 2.0;
-        matrix![
-            q.w, q.z, -q.y;
-            -q.z, q.w, q.x;
-            q.y, -q.x, q.w;
-            -q.x, -q.y, -q.z;
-        ]
+    fn normalize(mut self) -> Self {
+        self.angular %= PI;
+        self
     }
-    fn kinematic_map(self) -> Split<MatrixV, MatrixRV> {
-        Split::new(MatrixV::identity(), self.rotation_map())
-    }
-    fn map_velocity(self, velocity: Velocity) -> Displacement {
-        Displacement {
-            linear: velocity.linear,
-            // Should be equal to the kinematic map times the velocity.
-            angular: (PartialRotation::from_imag(velocity.angular) * *self.angular) / 2.0,
-        }
-    }
-    fn unconstrain(self) -> Displacement {
-        Displacement {
-            linear: self.linear,
-            angular: *self.angular,
-        }
-    }
-    fn step(self, velocity: Velocity) -> Self {
-        (self.map_velocity(velocity) + self.unconstrain()).normalize()
-    }
-}
-impl Displacement {
-    fn normalize(self) -> Position {
-        Position {
-            linear: self.linear,
-            angular: Rotation::from_quaternion(self.angular),
-        }
-    }
-}
 
-#[test]
-fn test_rotation_map() {
-    let pos = Position::from_angular(Rotation::from_quaternion(PartialRotation::new(
-        0.7, 3.0, 2.0, -1.0,
-    )));
-    let rot_map = pos.rotation_map();
-    let vel = Vector::new(7.0, -10.0, 2.6);
-    assert_eq!(
-        PartialRotation::from_vector(rot_map * vel),
-        pos.map_velocity(Velocity::from_angular(vel)).angular
-    );
+    fn step(self, velocity: Velocity) -> Self {
+        (velocity + self).normalize()
+    }
 }
 
 trait Constraint<const N: usize, const V: usize>: Debug {
@@ -136,12 +110,7 @@ trait Constraint<const N: usize, const V: usize>: Debug {
     fn gradient(&self, positions: [Position; N]) -> [Gradient<V>; N];
     fn stiffness(&self) -> SVector<Real, V>;
     fn jacobian(&self, positions: [Position; N]) -> [Jacobian<V>; N] {
-        let gradient = self.gradient(positions);
-        gradient
-            .into_iter_fixed()
-            .zip(positions)
-            .map(|(grad, pos)| grad * pos.kinematic_map())
-            .collect()
+        self.gradient(positions)
     }
     fn potential(&self, positions: [Position; N]) -> Real {
         let value = self.value(positions);
@@ -152,13 +121,11 @@ trait Constraint<const N: usize, const V: usize>: Debug {
         let value = self.value(positions);
         gradient
             .into_iter_fixed()
-            .zip(positions)
-            .map(|(grad, pos)| {
-                let map = pos.kinematic_map();
-                let jc = grad * map;
+            .map(|jc| {
                 Split::new(
                     -jc.linear.transpose() * Matrix::from_diagonal(&self.stiffness()) * value,
-                    -jc.angular.transpose() * Matrix::from_diagonal(&self.stiffness()) * value,
+                    (-jc.angular.transpose() * Matrix::from_diagonal(&self.stiffness()) * value)
+                        .into_scalar(),
                 )
             })
             .collect()
@@ -173,7 +140,7 @@ trait Constraint<const N: usize, const V: usize>: Debug {
                     (jc.angular.transpose()
                         * Matrix::from_diagonal(&self.stiffness())
                         * jc.angular)
-                        .diagonal(),
+                        .into_scalar(),
                 )
             })
             .collect()
@@ -313,28 +280,28 @@ async fn main() {
     request_new_screen_size(1000.0, 800.0);
 
     let mut position: Vec<Position> = vec![
-        vector![0.0, 0.0, 0.0],
-        vector![2.0, 0.0, 0.0],
-        vector![4.0, 0.0, 0.0],
-        vector![6.0, 0.0, 0.0],
-        vector![8.0, 0.0, 0.0],
-        vector![8.0, -3.0, 0.0],
+        vector![0.0, 0.0],
+        vector![2.0, 0.0],
+        vector![4.0, 0.0],
+        vector![6.0, 0.0],
+        vector![8.0, 0.0],
+        vector![8.0, -3.0],
     ]
     .into_iter()
     .map(Split::from_linear)
     .collect();
     let mut velocity: Vec<Velocity> = vec![
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 2.0, 0.0], vector![0.0, 0.0, 0.0]),
+        Split::new(vector![0.0, 0.0], 0.0),
+        Split::new(vector![0.0, 0.0], 0.0),
+        Split::new(vector![0.0, 0.0], 0.0),
+        Split::new(vector![0.0, 0.0], 0.0),
+        Split::new(vector![0.0, 0.0], 0.0),
+        Split::new(vector![0.0, 2.0], 0.0),
     ];
     // TODO: Setting it to infinity is not supported yet.
     let mass: Vec<Mass> = vec![9999999.0, 1.0, 1.0, 1.0, 1.0, 5.0]
         .into_iter()
-        .map(|x| Split::new(x, MatrixV::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
+        .map(|x| Split::new(x, 1.0 / 2.0 * x * 0.5 * 0.5))
         .collect();
     let particles = position.len();
     assert_eq!(particles, velocity.len());
@@ -465,9 +432,10 @@ async fn main() {
                                 velocity[k].linear += mass[k].linear.inverse()
                                     * jacobian[j].linear.transpose()
                                     * &delta;
-                                velocity[k].angular += mass[k].angular.inverse()
+                                velocity[k].angular += (mass[k].angular.inverse()
                                     * jacobian[j].angular.transpose()
-                                    * &delta;
+                                    * &delta)
+                                    .into_scalar();
                             }
                         }
                         for i in 0..particles {
@@ -477,7 +445,7 @@ async fn main() {
                 } else {
                     if warm_start {
                         for i in 0..particles {
-                            velocity[i] += mass[i].inverse() * last_forces[i] * warm_start_factor;
+                            velocity[i] += warm_start_factor * mass[i].inverse() * last_forces[i];
                         }
                         for i in 0..particles {
                             position[i] = last_position[i].step(velocity[i]);
@@ -485,7 +453,7 @@ async fn main() {
                     }
                     for _iter in 0..num_iters {
                         let mut forces = vec![Force::default(); particles];
-                        let mut grad2_diag = vec![Split::<Vector, Vector>::default(); particles];
+                        let mut grad2_diag = vec![Split::default(); particles];
 
                         for ConstraintBox {
                             targets,
@@ -505,7 +473,7 @@ async fn main() {
                             .map(|i| {
                                 let precond = Split::new(
                                     Vector::repeat(mass[i].linear) + grad2_diag[i].linear,
-                                    mass[i].angular.diagonal() + grad2_diag[i].angular,
+                                    mass[i].angular + grad2_diag[i].angular,
                                 )
                                 .recip();
                                 let grad = mass[i] * (velocity[i] - last_velocity[i]) - forces[i];
@@ -555,14 +523,12 @@ async fn main() {
             }
 
             for p in &position {
-                let pos = p.linear.xy() * scaling + offset;
+                let pos = p.linear * scaling + offset;
                 draw_circle(pos.x, pos.y, 0.5 * scaling, RED);
-                let rot_x = (p.angular * vector![0.5, 0.0, 0.0]).xy() * scaling + pos;
+                let rot_x = (rotation_matrix(p.angular) * vector![0.5, 0.0]) * scaling + pos;
                 draw_line(pos.x, pos.y, rot_x.x, rot_x.y, 3.0, WHITE);
-                let rot_y = (p.angular * vector![0.0, 0.5, 0.0]).xy() * scaling + pos;
+                let rot_y = (rotation_matrix(p.angular) * vector![0.0, 0.5]) * scaling + pos;
                 draw_line(pos.x, pos.y, rot_y.x, rot_y.y, 3.0, GREEN);
-                let rot_z = (p.angular * vector![0.0, 0.0, 0.5]).xy() * scaling + pos;
-                draw_line(pos.x, pos.y, rot_z.x, rot_z.y, 3.0, BLUE);
             }
             macroquad::window::next_frame().await
         }

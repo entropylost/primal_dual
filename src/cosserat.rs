@@ -16,8 +16,8 @@ impl CosseratRod {
         [pi, pj]: [Position; 2],
     ) -> Self {
         let length = (pj.linear - pi.linear).norm();
-        let rest_rotation =
-            Rotation::rotation_between(&Vector::x(), &(pj.linear - pi.linear)).unwrap();
+        let delta = pj.linear - pi.linear;
+        let rest_rotation = delta.y.atan2(delta.x);
         Self {
             radius: rod_radius,
             young_modulus,
@@ -29,28 +29,18 @@ impl CosseratRod {
     fn stretch_shear(self) -> Vector {
         let s = PI * self.radius.powi(2);
         let a = 5.0 / 6.0 * s;
-        Vector::new(
-            self.young_modulus * s,
-            self.shear_modulus * a,
-            self.shear_modulus * a,
-        )
+        Vector::new(self.young_modulus * s, self.shear_modulus * a)
     }
-    fn bend_twist(self) -> Vector {
+    fn bend_twist(self) -> Scalar {
         let i = PI * self.radius.powi(4) / 4.0;
         let j = PI * self.radius.powi(4) / 2.0;
-        Vector::new(
-            self.shear_modulus * j,
-            self.young_modulus * i,
-            self.young_modulus * i,
-        )
+        Scalar::new(self.young_modulus * i)
     }
     fn center_rotation(self, [pi, pj]: [Position; 2]) -> Rotation {
-        pi.angular.nlerp(&pj.angular, 0.5)
+        (pi.angular + pj.angular) / 2.0
     }
-    fn center_rotation_gradient(self, [pi, pj]: [Position; 2]) -> MatrixR {
-        let qm = pi.angular.lerp(&pj.angular, 0.5);
-        let qij = Rotation::from_quaternion(qm);
-        (MatrixR::identity() - qij.as_vector() * qij.as_vector().transpose()) / qm.norm()
+    fn center_rotation_gradient(self, [pi, pj]: [Position; 2]) -> Real {
+        0.5
     }
 }
 
@@ -65,92 +55,31 @@ impl Deref for CosseratStretchShear {
     }
 }
 
-// p * q = rmul_mat(q) * p
-fn rmul_mat(q: PartialRotation) -> MatrixR {
-    stack![
-        MatrixV::from_diagonal_element(q.scalar()) - cross_matrix(q.vector().into()), q.vector();
-        -q.vector().transpose(), na::Matrix1::<Real>::new(q.scalar())
-    ]
-}
-
-// p * q = lmul_mat(p) * q
-fn lmul_mat(p: PartialRotation) -> MatrixR {
-    stack![
-        MatrixV::from_diagonal_element(p.scalar()) + cross_matrix(p.vector().into()), p.vector();
-         -p.vector().transpose(), na::Matrix1::<Real>::new(p.scalar())
-    ]
-}
-
-#[test]
-fn test_quat_mul() {
-    let p = PartialRotation::new(1.0, 6.0, -2.0, 3.0);
-    let q = PartialRotation::new(7.0, -3.0, 5.0, 10.0);
-    assert_eq!((p * q).coords, lmul_mat(p) * q.coords);
-    assert_eq!((p * q).coords, rmul_mat(q) * p.coords);
-}
-
-// v.cross(w) = cross_matrix(v) * w
-fn cross_matrix(v: Vector) -> MatrixV {
-    matrix![
-        0.0, -v.z, v.y;
-        v.z, 0.0, -v.x;
-        -v.y, v.x, 0.0
-    ]
-}
-
 impl CosseratStretchShear {
     fn strain_measure(self, p @ [pi, pj]: [Position; 2]) -> Vector {
         1.0 / self.length
-            * ((self.center_rotation(p) * self.rest_rotation).inverse() * (pj.linear - pi.linear))
+            * (rotation_matrix(self.center_rotation(p) + self.rest_rotation).transpose()
+                * (pj.linear - pi.linear))
             - Vector::x()
     }
     // Wrt. the first position
     fn strain_gradient_lin(self, p: [Position; 2]) -> MatrixV {
         -1.0 / self.length
-            * (self.center_rotation(p) * self.rest_rotation)
-                .to_rotation_matrix()
-                .matrix()
-                .transpose()
+            * rotation_matrix(self.center_rotation(p) + self.rest_rotation).transpose()
     }
-    fn strain_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> MatrixVR {
-        /*let qm = pi.angular.lerp(&pj.angular, 0.5);
-        let qij = UnitQuaternion::from_quaternion(qm);
-
-        let qpart = (Quaternion::from_imag(pj.linear - pi.linear) * *qij);
-        let v = qpart.coords;
-
-        let a = qij.to_rotation_matrix().matrix()
-            * matrix![
-                -v.w, -v.z, v.y, v.x;
-                v.z, -v.w, -v.x, v.y;
-                -v.y, v.x, -v.w, v.z;
-            ];
-
-        let b = (pj.linear - pi.linear) * qij.as_vector().transpose();
-
-        1.0 / self.length / qm.norm()
-            * (qij * self.rest_rotation)
-                .to_rotation_matrix()
-                .matrix()
-                .transpose()
-            * (a - b)
-        */
-        let qij = *self.center_rotation(p);
+    fn strain_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Vector {
+        let qij = self.center_rotation(p);
         let dqij = self.center_rotation_gradient(p);
-        1.0 / self.length
-            * self.rest_rotation.to_rotation_matrix().matrix().transpose()
-            * rmul_mat(PartialRotation::from_imag(pj.linear - pi.linear) * qij)
-                .fixed_view::<3, 4>(0, 0)
-            * MatrixR::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
-            * dqij
+        let rot_grad = dqij * rotation_matrix_gradient(qij + self.rest_rotation).transpose();
+        1.0 / self.length * rot_grad * (pj.linear - pi.linear)
     }
 }
 
-impl Constraint<2, 3> for CosseratStretchShear {
+impl Constraint<2, 2> for CosseratStretchShear {
     fn value(&self, p: [Position; 2]) -> Vector {
         self.strain_measure(p)
     }
-    fn gradient(&self, p: [Position; 2]) -> [Gradient<3>; 2] {
+    fn gradient(&self, p: [Position; 2]) -> [Gradient<2>; 2] {
         let grad_lin = self.strain_gradient_lin(p);
         let grad_ang = self.strain_gradient_ang(p);
         [
@@ -158,7 +87,7 @@ impl Constraint<2, 3> for CosseratStretchShear {
             Split::new(-grad_lin, grad_ang),
         ]
     }
-    fn stiffness(&self) -> SVector<Real, 3> {
+    fn stiffness(&self) -> Vector {
         self.stretch_shear() * self.length
     }
 }
@@ -175,54 +104,28 @@ impl Deref for CosseratBendTwist {
 }
 
 impl CosseratBendTwist {
-    fn darboux_vector(self, p @ [pi, pj]: [Position; 2]) -> Vector {
-        2.0 / self.length
-            * (*self.center_rotation(p).conjugate() * (*pj.angular - *pi.angular)).imag()
+    fn darboux_vector(self, p @ [pi, pj]: [Position; 2]) -> Real {
+        // cos(th / 2.0) + k * sin(th / 2.0) - cos(phi / 2.0) - k * sin(phi / 2.0)
+        //
+        2.0 / self.length * ((pj.angular - pi.angular) / 2.0).sin()
     }
-    fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> MatrixVR {
-        /*let qm = pi.angular.lerp(&pj.angular, 0.5);
-        let qij = UnitQuaternion::from_quaternion(qm);
-        let p = qij.coords;
-
-        let qijc_mat = matrix![
-            p.w, p.z, -p.y, -p.x;
-            -p.z, p.w, p.x, -p.y;
-            p.y, -p.x, p.w, -p.z;
-        ];
-        let qdiff = *pj.angular - *pi.angular;
-        let v = qdiff.coords;
-        let a = matrix![
-            -v.w, -v.z, v.y, v.x;
-            v.z, -v.w, -v.x, v.y;
-            -v.y, v.x, -v.w, v.z
-        ];
-        let b = qijc_mat * v * p.transpose();
-        let c = qijc_mat;
-        ((a - b) / qm.norm() - 2.0 * c) / self.length*/
-        let dqij = self.center_rotation_gradient(p);
-        let gradient = 2.0 / self.length
-            * (1.0 / 2.0
-                * rmul_mat(*pj.angular - *pi.angular)
-                * MatrixR::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
-                * dqij
-                - lmul_mat(*self.center_rotation(p).conjugate()));
-
-        gradient.fixed_view::<3, 4>(0, 0).into_owned()
+    fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Real {
+        -1.0 / self.length * ((pj.angular - pi.angular) / 2.0).cos()
     }
 }
 
-impl Constraint<2, 3> for CosseratBendTwist {
-    fn value(&self, p: [Position; 2]) -> Vector {
-        self.darboux_vector(p)
+impl Constraint<2, 1> for CosseratBendTwist {
+    fn value(&self, p: [Position; 2]) -> Scalar {
+        Scalar::new(self.darboux_vector(p))
     }
-    fn gradient(&self, p: [Position; 2]) -> [Gradient<3>; 2] {
-        let grad_ang = self.darboux_gradient_ang(p);
+    fn gradient(&self, p: [Position; 2]) -> [Gradient<1>; 2] {
+        let grad_ang = Scalar::new(self.darboux_gradient_ang(p));
         [
             Split::from_angular(grad_ang),
             Split::from_angular(-grad_ang),
         ]
     }
-    fn stiffness(&self) -> SVector<Real, 3> {
+    fn stiffness(&self) -> Scalar {
         self.bend_twist() * self.length
     }
 }
