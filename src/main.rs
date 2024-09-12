@@ -22,21 +22,20 @@ type Real = f32;
 type Scalar = na::Matrix1<Real>;
 type DVector = na::DVector<Real>;
 type DMatrix = na::DMatrix<Real>;
-type Vector3 = na::Vector3<Real>;
-type RVector3 = na::RowVector3<Real>;
-type Matrix3 = na::Matrix3<Real>;
-type Matrix3x4 = na::Matrix3x4<Real>;
-type Matrix4x3 = na::Matrix4x3<Real>;
-type Matrix4 = na::Matrix4<Real>;
-type Quaternion = na::Quaternion<Real>;
-type UnitQuaternion = na::UnitQuaternion<Real>;
+type Vector = na::Vector3<Real>;
+type RVector = na::RowVector3<Real>;
+type MatrixV = na::Matrix3<Real>;
+type MatrixVR = na::Matrix3x4<Real>;
+type MatrixRV = na::Matrix4x3<Real>;
+type MatrixR = na::Matrix4<Real>;
+type PartialRotation = na::Quaternion<Real>;
+type Rotation = na::UnitQuaternion<Real>;
 
-type Split3 = Split<Vector3, Vector3>;
-type Position = Split<Vector3, UnitQuaternion>;
-type Displacement = Split<Vector3, Quaternion>;
-type Velocity = Split<Vector3, Vector3>;
-type Force = Split<Vector3, Vector3>;
-type Mass = Split<Real, Matrix3>;
+type Position = Split<Vector, Rotation>;
+type Displacement = Split<Vector, PartialRotation>;
+type Velocity = Split<Vector, Vector>;
+type Force = Split<Vector, Vector>;
+type Mass = Split<Real, MatrixV>;
 type Gradient<const V: usize> = Split<SMatrix<Real, V, 3>, SMatrix<Real, V, 4>>;
 type DGradient = Split<MatrixXx3<Real>, MatrixXx4<Real>>;
 type Jacobian<const V: usize> = Split<SMatrix<Real, V, 3>, SMatrix<Real, V, 3>>;
@@ -81,7 +80,7 @@ impl<const V: usize> Jacobian<V> {
 }
 
 impl Position {
-    fn rotation_map(self) -> Matrix4x3 {
+    fn rotation_map(self) -> MatrixRV {
         let q = self.angular.quaternion().as_vector() / 2.0;
         matrix![
             q.w, q.z, -q.y;
@@ -90,14 +89,14 @@ impl Position {
             -q.x, -q.y, -q.z;
         ]
     }
-    fn kinematic_map(self) -> Split<Matrix3, Matrix4x3> {
-        Split::new(Matrix3::identity(), self.rotation_map())
+    fn kinematic_map(self) -> Split<MatrixV, MatrixRV> {
+        Split::new(MatrixV::identity(), self.rotation_map())
     }
     fn map_velocity(self, velocity: Velocity) -> Displacement {
         Displacement {
             linear: velocity.linear,
             // Should be equal to the kinematic map times the velocity.
-            angular: (Quaternion::from_imag(velocity.angular) * *self.angular) / 2.0,
+            angular: (PartialRotation::from_imag(velocity.angular) * *self.angular) / 2.0,
         }
     }
     fn unconstrain(self) -> Displacement {
@@ -114,20 +113,20 @@ impl Displacement {
     fn normalize(self) -> Position {
         Position {
             linear: self.linear,
-            angular: UnitQuaternion::from_quaternion(self.angular),
+            angular: Rotation::from_quaternion(self.angular),
         }
     }
 }
 
 #[test]
 fn test_rotation_map() {
-    let pos = Position::from_angular(UnitQuaternion::from_quaternion(Quaternion::new(
+    let pos = Position::from_angular(Rotation::from_quaternion(PartialRotation::new(
         0.7, 3.0, 2.0, -1.0,
     )));
     let rot_map = pos.rotation_map();
-    let vel = Vector3::new(7.0, -10.0, 2.6);
+    let vel = Vector::new(7.0, -10.0, 2.6);
     assert_eq!(
-        Quaternion::from_vector(rot_map * vel),
+        PartialRotation::from_vector(rot_map * vel),
         pos.map_velocity(Velocity::from_angular(vel)).angular
     );
 }
@@ -164,7 +163,7 @@ trait Constraint<const N: usize, const V: usize>: Debug {
             })
             .collect()
     }
-    fn grad2_diag(&self, positions: [Position; N]) -> [Split3; N] {
+    fn grad2_diag(&self, positions: [Position; N]) -> [Split; N] {
         self.jacobian(positions)
             .into_iter_fixed()
             .map(|jc| {
@@ -229,7 +228,7 @@ trait DynConstraint: Debug {
     fn stiffness(&self) -> DVector;
     fn potential(&self, positions: &[Position]) -> Real;
     fn force(&self, positions: &[Position]) -> Vec<Force>;
-    fn grad2_diag(&self, positions: &[Position]) -> Vec<Split3>;
+    fn grad2_diag(&self, positions: &[Position]) -> Vec<Split>;
 
     fn dual_preconditioner(&self, positions: &[Position], mass: &[Mass]) -> DMatrix;
     fn dual_cheap_preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector;
@@ -269,7 +268,7 @@ where
     fn force(&self, positions: &[Position]) -> Vec<Force> {
         self.0.force(positions.try_into().unwrap()).into()
     }
-    fn grad2_diag(&self, positions: &[Position]) -> Vec<Split3> {
+    fn grad2_diag(&self, positions: &[Position]) -> Vec<Split> {
         self.0.grad2_diag(positions.try_into().unwrap()).into()
     }
 
@@ -335,7 +334,7 @@ async fn main() {
     // TODO: Setting it to infinity is not supported yet.
     let mass: Vec<Mass> = vec![9999999.0, 1.0, 1.0, 1.0, 1.0, 5.0]
         .into_iter()
-        .map(|x| Split::new(x, Matrix3::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
+        .map(|x| Split::new(x, MatrixV::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
         .collect();
     let particles = position.len();
     assert_eq!(particles, velocity.len());
@@ -486,7 +485,7 @@ async fn main() {
                     }
                     for _iter in 0..num_iters {
                         let mut forces = vec![Force::default(); particles];
-                        let mut grad2_diag = vec![Split::<Vector3, Vector3>::default(); particles];
+                        let mut grad2_diag = vec![Split::<Vector, Vector>::default(); particles];
 
                         for ConstraintBox {
                             targets,
@@ -505,7 +504,7 @@ async fn main() {
                         let step = (0..particles)
                             .map(|i| {
                                 let precond = Split::new(
-                                    Vector3::repeat(mass[i].linear) + grad2_diag[i].linear,
+                                    Vector::repeat(mass[i].linear) + grad2_diag[i].linear,
                                     mass[i].angular.diagonal() + grad2_diag[i].angular,
                                 )
                                 .recip();

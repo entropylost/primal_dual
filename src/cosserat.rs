@@ -6,7 +6,7 @@ pub struct CosseratRod {
     pub young_modulus: Real,
     pub shear_modulus: Real,
     pub length: Real,
-    pub rest_rotation: UnitQuaternion,
+    pub rest_rotation: Rotation,
 }
 impl CosseratRod {
     pub fn resting_state(
@@ -17,7 +17,7 @@ impl CosseratRod {
     ) -> Self {
         let length = (pj.linear - pi.linear).norm();
         let rest_rotation =
-            UnitQuaternion::rotation_between(&Vector3::z(), &(pj.linear - pi.linear)).unwrap();
+            Rotation::rotation_between(&Vector::x(), &(pj.linear - pi.linear)).unwrap();
         Self {
             radius: rod_radius,
             young_modulus,
@@ -26,31 +26,31 @@ impl CosseratRod {
             rest_rotation,
         }
     }
-    fn stretch_shear(self) -> Vector3 {
+    fn stretch_shear(self) -> Vector {
         let s = PI * self.radius.powi(2);
         let a = 5.0 / 6.0 * s;
-        Vector3::new(
-            self.shear_modulus * a,
-            self.shear_modulus * a,
+        Vector::new(
             self.young_modulus * s,
+            self.shear_modulus * a,
+            self.shear_modulus * a,
         )
     }
-    fn bend_twist(self) -> Vector3 {
+    fn bend_twist(self) -> Vector {
         let i = PI * self.radius.powi(4) / 4.0;
         let j = PI * self.radius.powi(4) / 2.0;
-        Vector3::new(
-            self.young_modulus * i,
-            self.young_modulus * i,
+        Vector::new(
             self.shear_modulus * j,
+            self.young_modulus * i,
+            self.young_modulus * i,
         )
     }
-    fn center_rotation(self, [pi, pj]: [Position; 2]) -> UnitQuaternion {
+    fn center_rotation(self, [pi, pj]: [Position; 2]) -> Rotation {
         pi.angular.nlerp(&pj.angular, 0.5)
     }
-    fn center_rotation_gradient(self, [pi, pj]: [Position; 2]) -> Matrix4 {
+    fn center_rotation_gradient(self, [pi, pj]: [Position; 2]) -> MatrixR {
         let qm = pi.angular.lerp(&pj.angular, 0.5);
-        let qij = UnitQuaternion::from_quaternion(qm);
-        (Matrix4::identity() - qij.as_vector() * qij.as_vector().transpose()) / qm.norm()
+        let qij = Rotation::from_quaternion(qm);
+        (MatrixR::identity() - qij.as_vector() * qij.as_vector().transpose()) / qm.norm()
     }
 }
 
@@ -66,31 +66,31 @@ impl Deref for CosseratStretchShear {
 }
 
 // p * q = rmul_mat(q) * p
-fn rmul_mat(q: Quaternion) -> Matrix4 {
+fn rmul_mat(q: PartialRotation) -> MatrixR {
     stack![
-        Matrix3::from_diagonal_element(q.scalar()) - cross_matrix(q.vector().into()), q.vector();
+        MatrixV::from_diagonal_element(q.scalar()) - cross_matrix(q.vector().into()), q.vector();
         -q.vector().transpose(), na::Matrix1::<Real>::new(q.scalar())
     ]
 }
 
 // p * q = lmul_mat(p) * q
-fn lmul_mat(p: Quaternion) -> Matrix4 {
+fn lmul_mat(p: PartialRotation) -> MatrixR {
     stack![
-        Matrix3::from_diagonal_element(p.scalar()) + cross_matrix(p.vector().into()), p.vector();
+        MatrixV::from_diagonal_element(p.scalar()) + cross_matrix(p.vector().into()), p.vector();
          -p.vector().transpose(), na::Matrix1::<Real>::new(p.scalar())
     ]
 }
 
 #[test]
 fn test_quat_mul() {
-    let p = Quaternion::new(1.0, 6.0, -2.0, 3.0);
-    let q = Quaternion::new(7.0, -3.0, 5.0, 10.0);
+    let p = PartialRotation::new(1.0, 6.0, -2.0, 3.0);
+    let q = PartialRotation::new(7.0, -3.0, 5.0, 10.0);
     assert_eq!((p * q).coords, lmul_mat(p) * q.coords);
     assert_eq!((p * q).coords, rmul_mat(q) * p.coords);
 }
 
 // v.cross(w) = cross_matrix(v) * w
-fn cross_matrix(v: Vector3) -> Matrix3 {
+fn cross_matrix(v: Vector) -> MatrixV {
     matrix![
         0.0, -v.z, v.y;
         v.z, 0.0, -v.x;
@@ -99,20 +99,20 @@ fn cross_matrix(v: Vector3) -> Matrix3 {
 }
 
 impl CosseratStretchShear {
-    fn strain_measure(self, p @ [pi, pj]: [Position; 2]) -> Vector3 {
+    fn strain_measure(self, p @ [pi, pj]: [Position; 2]) -> Vector {
         1.0 / self.length
             * ((self.center_rotation(p) * self.rest_rotation).inverse() * (pj.linear - pi.linear))
-            - Vector3::z()
+            - Vector::x()
     }
     // Wrt. the first position
-    fn strain_gradient_lin(self, p: [Position; 2]) -> Matrix3 {
+    fn strain_gradient_lin(self, p: [Position; 2]) -> MatrixV {
         -1.0 / self.length
             * (self.center_rotation(p) * self.rest_rotation)
                 .to_rotation_matrix()
                 .matrix()
                 .transpose()
     }
-    fn strain_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Matrix3x4 {
+    fn strain_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> MatrixVR {
         /*let qm = pi.angular.lerp(&pj.angular, 0.5);
         let qij = UnitQuaternion::from_quaternion(qm);
 
@@ -139,14 +139,15 @@ impl CosseratStretchShear {
         let dqij = self.center_rotation_gradient(p);
         1.0 / self.length
             * self.rest_rotation.to_rotation_matrix().matrix().transpose()
-            * rmul_mat(Quaternion::from_imag(pj.linear - pi.linear) * qij).fixed_view::<3, 4>(0, 0)
-            * Matrix4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
+            * rmul_mat(PartialRotation::from_imag(pj.linear - pi.linear) * qij)
+                .fixed_view::<3, 4>(0, 0)
+            * MatrixR::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
             * dqij
     }
 }
 
 impl Constraint<2, 3> for CosseratStretchShear {
-    fn value(&self, p: [Position; 2]) -> Vector3 {
+    fn value(&self, p: [Position; 2]) -> Vector {
         self.strain_measure(p)
     }
     fn gradient(&self, p: [Position; 2]) -> [Gradient<3>; 2] {
@@ -174,11 +175,11 @@ impl Deref for CosseratBendTwist {
 }
 
 impl CosseratBendTwist {
-    fn darboux_vector(self, p @ [pi, pj]: [Position; 2]) -> Vector3 {
+    fn darboux_vector(self, p @ [pi, pj]: [Position; 2]) -> Vector {
         2.0 / self.length
             * (*self.center_rotation(p).conjugate() * (*pj.angular - *pi.angular)).imag()
     }
-    fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Matrix3x4 {
+    fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> MatrixVR {
         /*let qm = pi.angular.lerp(&pj.angular, 0.5);
         let qij = UnitQuaternion::from_quaternion(qm);
         let p = qij.coords;
@@ -202,7 +203,7 @@ impl CosseratBendTwist {
         let gradient = 2.0 / self.length
             * (1.0 / 2.0
                 * rmul_mat(*pj.angular - *pi.angular)
-                * Matrix4::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
+                * MatrixR::from_diagonal(&vector![-1.0, -1.0, -1.0, 1.0])
                 * dqij
                 - lmul_mat(*self.center_rotation(p).conjugate()));
 
@@ -211,7 +212,7 @@ impl CosseratBendTwist {
 }
 
 impl Constraint<2, 3> for CosseratBendTwist {
-    fn value(&self, p: [Position; 2]) -> Vector3 {
+    fn value(&self, p: [Position; 2]) -> Vector {
         self.darboux_vector(p)
     }
     fn gradient(&self, p: [Position; 2]) -> [Gradient<3>; 2] {

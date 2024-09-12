@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Rod {
-    pub(crate) normal: RVector3,
+    pub(crate) normal: RVector,
     pub(crate) stiffness: Real,
     pub(crate) length: Real,
 }
@@ -24,7 +24,7 @@ impl Constraint<2, 1> for Rod {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Contact {
-    pub(crate) normal: RVector3,
+    pub(crate) normal: RVector,
     pub(crate) stiffness: Real,
     pub(crate) length: Real,
 }

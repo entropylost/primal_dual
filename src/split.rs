@@ -5,7 +5,7 @@ use nalgebra::SMatrix;
 use crate::Real;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub(crate) struct Split<A, B> {
+pub(crate) struct Split<A = crate::Vector, B = crate::Vector> {
     pub(crate) linear: A,
     pub(crate) angular: B,
 }
