@@ -96,7 +96,7 @@ impl<const V: usize> Gradient<V> {
 
 impl Position {
     fn normalize(mut self) -> Self {
-        self.angular %= PI;
+        self.angular %= 4.0 * PI;
         self
     }
 
