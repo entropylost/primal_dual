@@ -20,6 +20,9 @@ impl Constraint<2, 1> for Rod {
     fn stiffness(&self) -> Scalar {
         Scalar::new(self.stiffness)
     }
+    fn set_timestep(&mut self, dt: Real) {
+        self.stiffness *= dt * dt;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,6 +45,9 @@ impl Constraint<2, 1> for Contact {
     fn stiffness(&self) -> Scalar {
         Scalar::new(self.stiffness)
     }
+    fn set_timestep(&mut self, dt: Real) {
+        self.stiffness *= dt * dt;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,5 +66,8 @@ impl Constraint<2, 1> for RadialContact {
     }
     fn stiffness(&self) -> Scalar {
         Scalar::new(self.stiffness)
+    }
+    fn set_timestep(&mut self, dt: Real) {
+        self.stiffness *= dt * dt;
     }
 }

@@ -4,7 +4,9 @@
 
 use contact::Contact;
 use cosserat::{CosseratBendTwist, CosseratRod, CosseratStretchShear};
+use dyn_clone::DynClone;
 use iter_fixed::IntoIteratorFixed;
+use macroquad::color;
 use macroquad::input::KeyCode;
 use macroquad::window::request_new_screen_size;
 use nalgebra::{
@@ -17,7 +19,7 @@ use std::{f32::consts::PI, ops::Deref};
 mod split;
 use split::{Invertible, Split};
 
-use crate::solver::{DualSolver, Solver, Solvers};
+use crate::solver::{DualSolver, PrimalSolver, Solver, Solvers};
 mod contact;
 mod cosserat;
 mod solver;
@@ -113,6 +115,9 @@ trait Constraint<const N: usize, const V: usize>: Debug {
     fn value(&self, positions: [Position; N]) -> SVector<Real, V>;
     fn gradient(&self, positions: [Position; N]) -> [Gradient<V>; N];
     fn stiffness(&self) -> SVector<Real, V>;
+
+    fn set_timestep(&mut self, dt: Real);
+
     fn jacobian(&self, positions: [Position; N]) -> [Jacobian<V>; N] {
         self.gradient(positions)
     }
@@ -201,10 +206,10 @@ trait Constraint<const N: usize, const V: usize>: Debug {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ConstraintWrapper<const N: usize, const V: usize, X: Constraint<N, V>>(X);
 
-trait DynConstraint: Debug {
+trait DynConstraint: Debug + DynClone {
     fn dim_n(&self) -> usize;
     fn dim_v(&self) -> usize;
     fn value(&self, positions: &[Position]) -> DVector;
@@ -219,11 +224,13 @@ trait DynConstraint: Debug {
 
     fn dual_preconditioner(&self, positions: &[Position], mass: &[Mass]) -> DMatrix;
     fn dual_preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector;
+
+    fn set_timestep(&mut self, dt: Real);
 }
 
 impl<const N: usize, const V: usize, X> DynConstraint for ConstraintWrapper<N, V, X>
 where
-    X: Constraint<N, V>,
+    X: Constraint<N, V> + Clone,
 {
     fn dim_n(&self) -> usize {
         N
@@ -277,9 +284,13 @@ where
                 .as_slice(),
         )
     }
+    fn set_timestep(&mut self, dt: Real) {
+        self.0.set_timestep(dt);
+    }
 }
+dyn_clone::clone_trait_object!(DynConstraint);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ConstraintBox {
     targets: Vec<usize>,
     constraint: Box<dyn DynConstraint>,
@@ -287,7 +298,7 @@ struct ConstraintBox {
 impl ConstraintBox {
     fn new<const N: usize, const V: usize>(
         targets: [usize; N],
-        constraint: impl Constraint<N, V> + 'static,
+        constraint: impl Constraint<N, V> + Clone + 'static,
     ) -> Self {
         Self {
             targets: targets.to_vec(),
@@ -296,11 +307,100 @@ impl ConstraintBox {
     }
 }
 
+struct World {
+    mass: Vec<Mass>,
+    position: Vec<Position>,
+    velocity: Vec<Velocity>,
+    constraints: Vec<ConstraintBox>,
+    dt: Real,
+    substeps: usize,
+    contact_stiffness: Real,
+}
+impl World {
+    fn new(
+        mass: &[Mass],
+        position: &[Position],
+        velocity: &[Velocity],
+        constraints: &[ConstraintBox],
+        dt: Real,
+        substeps: usize,
+        contact_stiffness: Real,
+    ) -> Self {
+        let dt = dt / substeps as Real;
+        let dt2 = dt * dt;
+        let contact_stiffness = contact_stiffness * dt2;
+
+        let mass = mass.to_vec();
+        let position = position.to_vec();
+        let mut velocity = velocity.to_vec();
+        for v in &mut velocity {
+            *v = *v * dt;
+        }
+        let mut constraints = constraints.to_vec();
+        for constraint in &mut constraints {
+            constraint.constraint.set_timestep(dt);
+        }
+        Self {
+            mass,
+            position,
+            velocity,
+            constraints,
+            dt,
+            substeps,
+            contact_stiffness,
+        }
+    }
+    fn update(&mut self, solver: &mut impl Solver) {
+        let particles = self.mass.len();
+        for _ in 0..self.substeps {
+            let last_position = self.position.clone();
+            let last_velocity = self.velocity.clone();
+            for i in 0..particles {
+                self.position[i] = self.position[i].step(self.velocity[i]);
+            }
+
+            let mut constraints = self.constraints.clone();
+
+            for i in 0..particles {
+                for j in i + 1..particles {
+                    let pi = self.position[i];
+                    let pj = self.position[j];
+                    if (pi.linear - pj.linear).norm() <= 1.0 {
+                        constraints.push(ConstraintBox::new(
+                            [i, j],
+                            Contact {
+                                normal: (pi.linear - pj.linear).normalize().transpose(),
+                                stiffness: self.contact_stiffness,
+                                length: 1.0,
+                            },
+                        ));
+                    }
+                }
+            }
+
+            solver.solve(
+                &self.mass,
+                &constraints,
+                &last_position,
+                &last_velocity,
+                &mut self.position,
+                &mut self.velocity,
+            );
+        }
+    }
+}
+
 #[macroquad::main("Primal / Dual")]
 async fn main() {
     request_new_screen_size(1000.0, 800.0);
 
-    let mut position: Vec<Position> = vec![
+    // TODO: Setting it to infinity is not supported yet.
+    let mass: Vec<Mass> = vec![9999999.0, 1.0, 1.0, 1.0, 1.0, 5.0]
+        .into_iter()
+        .map(|x| Split::new(x, 1.0 / 2.0 * x * 0.5 * 0.5))
+        .collect();
+
+    let position: Vec<Position> = vec![
         vector![0.0, 0.0],
         vector![2.0, 0.0],
         vector![4.0, 0.0],
@@ -311,7 +411,7 @@ async fn main() {
     .into_iter()
     .map(Split::from_linear)
     .collect();
-    let mut velocity: Vec<Velocity> = vec![
+    let velocity: Vec<Velocity> = vec![
         Split::new(vector![0.0, 0.0], 0.0),
         Split::new(vector![0.0, 0.0], 0.0),
         Split::new(vector![0.0, 0.0], 0.0),
@@ -319,41 +419,20 @@ async fn main() {
         Split::new(vector![0.0, 0.0], 0.0),
         Split::new(vector![0.0, 2.0], 0.0),
     ];
-    // TODO: Setting it to infinity is not supported yet.
-    let mass: Vec<Mass> = vec![9999999.0, 1.0, 1.0, 1.0, 1.0, 5.0]
-        .into_iter()
-        .map(|x| Split::new(x, 1.0 / 2.0 * x * 0.5 * 0.5))
-        .collect();
-    let particles = position.len();
+    let particles = mass.len();
+    assert_eq!(particles, position.len());
     assert_eq!(particles, velocity.len());
-    assert_eq!(particles, mass.len());
 
     let dt = 1.0 / 60.0;
-    let substeps = 1;
-
-    let mut solver = Solvers::Dual(DualSolver {
-        iterations: 1,
-        constraint_step: 0.5,
-        diag_precond: true,
-    });
-
-    let mut running = false;
-
-    let dt = dt / substeps as Real;
-    let dt2 = dt * dt;
-    for v in &mut velocity {
-        v.linear *= dt;
-        v.angular *= dt;
-    }
 
     let rod = CosseratRod::resting_state(
         0.5,
-        10000.0 * dt2, // This makes the rod stiffness independent of time.
-        10000.0 * dt2,
+        10000.0, // This makes the rod stiffness independent of time.
+        10000.0,
         [position[0], position[1]],
     );
 
-    let mut constraints = vec![
+    let constraints = vec![
         ConstraintBox::new([0, 1], CosseratStretchShear { rod }),
         ConstraintBox::new([0, 1], CosseratBendTwist { rod }),
         ConstraintBox::new([1, 2], CosseratStretchShear { rod }),
@@ -364,6 +443,62 @@ async fn main() {
         ConstraintBox::new([3, 4], CosseratBendTwist { rod }),
     ];
 
+    let mut worlds = [
+        (
+            Solvers::Primal(PrimalSolver {
+                iterations: 10,
+                constraint_step: 0.5,
+                diag_precond: false,
+            }),
+            1,
+            color::BLUE,
+        ),
+        (
+            Solvers::Primal(PrimalSolver {
+                iterations: 1,
+                constraint_step: 0.5,
+                diag_precond: true,
+            }),
+            10,
+            color::RED,
+        ),
+        (
+            Solvers::Primal(PrimalSolver {
+                iterations: 3,
+                constraint_step: 0.5,
+                diag_precond: true,
+            }),
+            3,
+            color::GREEN,
+        ),
+        (
+            Solvers::Dual(DualSolver {
+                iterations: 100,
+                constraint_step: 0.5,
+                diag_precond: false,
+            }),
+            10,
+            color::WHITE,
+        ),
+    ]
+    .map(|(solver, substeps, color)| {
+        (
+            World::new(
+                &mass,
+                &position,
+                &velocity,
+                &constraints,
+                dt,
+                substeps,
+                99999.0,
+            ),
+            solver,
+            color,
+        )
+    });
+
+    let mut running = false;
+
     loop {
         if macroquad::input::is_key_pressed(KeyCode::Space) {
             running = !running;
@@ -373,42 +508,8 @@ async fn main() {
         }
 
         if running || macroquad::input::is_key_pressed(KeyCode::Period) {
-            for _step in 0..substeps {
-                let last_position = position.clone();
-                let last_velocity = velocity.clone();
-                for i in 0..particles {
-                    position[i] = position[i].step(velocity[i]);
-                }
-
-                let lasting_constraints = constraints.len();
-
-                for i in 0..particles {
-                    for j in i + 1..particles {
-                        let pi = position[i];
-                        let pj = position[j];
-                        if (pi.linear - pj.linear).norm() <= 1.0 {
-                            constraints.push(ConstraintBox::new(
-                                [i, j],
-                                Contact {
-                                    normal: (pi.linear - pj.linear).normalize().transpose(),
-                                    stiffness: 99999.0 * dt2,
-                                    length: 1.0,
-                                },
-                            ));
-                        }
-                    }
-                }
-
-                solver.solve(
-                    &mass,
-                    &constraints,
-                    &last_position,
-                    &last_velocity,
-                    &mut position,
-                    &mut velocity,
-                );
-
-                constraints.truncate(lasting_constraints);
+            for (world, solver, _) in &mut worlds {
+                world.update(solver);
             }
         }
         {
@@ -420,29 +521,31 @@ async fn main() {
             if !running {
                 draw_text("Paused", screen_width() - 100.0, 30.0, 30.0, WHITE);
             }
-            draw_text(
-                &format!(
-                    "Solver: {} ({})",
-                    solver.name(),
-                    if solver.diag_precond() {
-                        "Diag"
-                    } else {
-                        "Full"
-                    }
-                ),
-                10.0,
-                30.0,
-                30.0,
-                WHITE,
-            );
+            for (i, (world, solver, color)) in worlds.iter().enumerate() {
+                draw_text(
+                    &format!(
+                        "Solver: {} ({})",
+                        solver.name(),
+                        if solver.diag_precond() {
+                            "Diag"
+                        } else {
+                            "Full"
+                        }
+                    ),
+                    10.0,
+                    30.0 * (i + 1) as f32,
+                    30.0,
+                    *color,
+                );
 
-            for p in &position {
-                let pos = p.linear * scaling + offset;
-                draw_circle(pos.x, pos.y, 0.5 * scaling, RED);
-                let rot_x = (rotation_matrix(p.angular) * vector![0.5, 0.0]) * scaling + pos;
-                draw_line(pos.x, pos.y, rot_x.x, rot_x.y, 3.0, WHITE);
-                let rot_y = (rotation_matrix(p.angular) * vector![0.0, 0.5]) * scaling + pos;
-                draw_line(pos.x, pos.y, rot_y.x, rot_y.y, 3.0, GREEN);
+                for p in &world.position {
+                    let pos = p.linear * scaling + offset;
+                    draw_circle(pos.x, pos.y, 0.5 * scaling, Color { a: 0.5, ..*color });
+                    let rot_x = (rotation_matrix(p.angular) * vector![0.5, 0.0]) * scaling + pos;
+                    draw_line(pos.x, pos.y, rot_x.x, rot_x.y, 3.0, WHITE);
+                    let rot_y = (rotation_matrix(p.angular) * vector![0.0, 0.5]) * scaling + pos;
+                    draw_line(pos.x, pos.y, rot_y.x, rot_y.y, 3.0, GREEN);
+                }
             }
             macroquad::window::next_frame().await
         }

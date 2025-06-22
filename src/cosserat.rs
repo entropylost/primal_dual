@@ -90,6 +90,10 @@ impl Constraint<2, 2> for CosseratStretchShear {
     fn stiffness(&self) -> Vector {
         self.stretch_shear() * self.length
     }
+    fn set_timestep(&mut self, dt: Real) {
+        self.rod.young_modulus *= dt * dt;
+        self.rod.shear_modulus *= dt * dt;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -127,5 +131,9 @@ impl Constraint<2, 1> for CosseratBendTwist {
     }
     fn stiffness(&self) -> Scalar {
         self.bend_twist() * self.length
+    }
+    fn set_timestep(&mut self, dt: Real) {
+        self.rod.young_modulus *= dt * dt;
+        self.rod.shear_modulus *= dt * dt;
     }
 }
