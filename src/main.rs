@@ -394,8 +394,7 @@ impl World {
 async fn main() {
     request_new_screen_size(1000.0, 800.0);
 
-    // TODO: Setting it to infinity is not supported yet.
-    let mass: Vec<Mass> = vec![9999999.0, 1.0, 1.0, 1.0, 1.0, 5.0]
+    let mass: Vec<Mass> = vec![f32::INFINITY, 1.0, 1.0, 1.0, 1.0, 5.0]
         .into_iter()
         .map(|x| Split::new(x, 1.0 / 2.0 * x * 0.5 * 0.5))
         .collect();

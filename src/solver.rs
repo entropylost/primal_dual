@@ -151,6 +151,9 @@ impl Solver for PrimalSolver {
                 })
                 .collect::<Vec<_>>();
             for (i, step) in step.into_iter().enumerate() {
+                if mass[i].linear.is_infinite() || mass[i].angular.is_infinite() {
+                    continue;
+                }
                 velocity[i] -= self.constraint_step * step;
             }
             for i in 0..particles {
