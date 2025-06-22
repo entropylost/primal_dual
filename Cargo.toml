@@ -8,3 +8,5 @@ macroquad = "0.4.13"
 nalgebra = { version = "0.33.0" }
 rand = "0.8.5"
 iter_fixed = "0.4.0"
+num-complex = "0.4.6"
+either = "1.15.0"
