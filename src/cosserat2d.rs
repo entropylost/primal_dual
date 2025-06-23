@@ -17,7 +17,7 @@ impl CosseratRod {
     ) -> Self {
         let delta = pj.linear - pi.linear;
         let length = delta.norm();
-        let rest_rotation = delta.y.atan2(delta.x);
+        let rest_rotation = Scalar::new(delta.y.atan2(delta.x));
         Self {
             radius: rod_radius,
             young_modulus,
@@ -32,14 +32,15 @@ impl CosseratRod {
         Vector::new(self.young_modulus * s, self.shear_modulus * a)
     }
     fn bend_twist(self) -> Scalar {
+        // TODO: These assume a 3d cylindrical rod, but it doesn't particularly matter.
         let i = PI * self.radius.powi(4) / 4.0;
-        let j = PI * self.radius.powi(4) / 2.0;
+        let _j = PI * self.radius.powi(4) / 2.0;
         Scalar::new(self.young_modulus * i)
     }
     fn center_rotation(self, [pi, pj]: [Position; 2]) -> Rotation {
         (pi.angular + pj.angular) / 2.0
     }
-    fn center_rotation_gradient(self, [pi, pj]: [Position; 2]) -> Real {
+    fn center_rotation_gradient(self, _: [Position; 2]) -> Real {
         0.5
     }
 }
@@ -63,7 +64,7 @@ impl CosseratStretchShear {
             - Vector::x()
     }
     // Wrt. the first position
-    fn strain_gradient_lin(self, p: [Position; 2]) -> MatrixV {
+    fn strain_gradient_lin(self, p: [Position; 2]) -> MatrixP {
         -1.0 / self.length
             * rotation_matrix(self.center_rotation(p) + self.rest_rotation).transpose()
     }
@@ -108,13 +109,13 @@ impl Deref for CosseratBendTwist {
 }
 
 impl CosseratBendTwist {
-    fn darboux_vector(self, p @ [pi, pj]: [Position; 2]) -> Real {
+    fn darboux_vector(self, [pi, pj]: [Position; 2]) -> Real {
         // cos(th / 2.0) + k * sin(th / 2.0) - cos(phi / 2.0) - k * sin(phi / 2.0)
         //
-        2.0 / self.length * ((pj.angular - pi.angular) / 2.0).sin()
+        2.0 / self.length * ((pj.angular - pi.angular) / 2.0).into_scalar().sin()
     }
-    fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> Real {
-        -1.0 / self.length * ((pj.angular - pi.angular) / 2.0).cos()
+    fn darboux_gradient_ang(self, [pi, pj]: [Position; 2]) -> Real {
+        -1.0 / self.length * ((pj.angular - pi.angular) / 2.0).into_scalar().cos()
     }
 }
 

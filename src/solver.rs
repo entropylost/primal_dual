@@ -106,7 +106,7 @@ impl Solver for PrimalSolver {
                         .map(|m| {
                             Split::new(
                                 MatrixP::identity() * m.linear,
-                                MatrixP::identity() * m.angular,
+                                MatrixW::identity() * m.angular,
                             )
                         })
                         .collect::<Vec<_>>(),

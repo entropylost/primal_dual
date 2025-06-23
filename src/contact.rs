@@ -1,5 +1,6 @@
 use super::*;
 
+#[expect(unused)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Rod {
     pub(crate) normal: RVector,
@@ -11,7 +12,7 @@ impl Constraint<2, 1> for Rod {
         let value = (self.normal * (pi.linear - pj.linear)).into_scalar() - self.length;
         Scalar::new(value)
     }
-    fn gradient(&self, positions: [Position; 2]) -> [Gradient<1>; 2] {
+    fn gradient(&self, _: [Position; 2]) -> [Gradient<1>; 2] {
         [
             Split::from_linear(self.normal),
             Split::from_linear(-self.normal),
@@ -36,7 +37,7 @@ impl Constraint<2, 1> for Contact {
         let value = (self.normal * (pi.linear - pj.linear)).into_scalar() - self.length;
         Scalar::new(value.min(0.0))
     }
-    fn gradient(&self, positions: [Position; 2]) -> [Gradient<1>; 2] {
+    fn gradient(&self, _: [Position; 2]) -> [Gradient<1>; 2] {
         [
             Split::from_linear(self.normal),
             Split::from_linear(-self.normal),
@@ -50,6 +51,7 @@ impl Constraint<2, 1> for Contact {
     }
 }
 
+#[expect(unused)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RadialContact {
     pub(crate) stiffness: Real,

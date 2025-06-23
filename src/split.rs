@@ -13,12 +13,14 @@ impl<A, B> Split<A, B> {
     pub(crate) fn new(linear: A, angular: B) -> Self {
         Self { linear, angular }
     }
+    #[expect(unused)]
     pub(crate) fn map_linear<C>(self, f: impl FnOnce(A) -> C) -> Split<C, B> {
         Split {
             linear: f(self.linear),
             angular: self.angular,
         }
     }
+    #[expect(unused)]
     pub(crate) fn map_angular<C>(self, f: impl FnOnce(B) -> C) -> Split<A, C> {
         Split {
             linear: self.linear,
@@ -215,12 +217,14 @@ impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
 }
 
 impl<const R: usize, const C: usize> Split<SMatrix<Real, R, C>, Real> {
+    #[expect(unused)]
     pub fn component_mul(self, rhs: Self) -> Self {
         Self {
             linear: self.linear.component_mul(&rhs.linear),
             angular: self.angular * rhs.angular,
         }
     }
+    #[expect(unused)]
     pub fn component_div(self, rhs: Self) -> Self {
         Self {
             linear: self.linear.component_div(&rhs.linear),
@@ -238,6 +242,7 @@ impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
             angular: self.angular.component_mul(&rhs.angular),
         }
     }
+    #[expect(unused)]
     pub fn component_div(self, rhs: Self) -> Self {
         Self {
             linear: self.linear.component_div(&rhs.linear),
@@ -256,7 +261,11 @@ impl Invertible for Real {
 }
 impl<const N: usize> Invertible for SMatrix<Real, N, N> {
     fn inverse(self) -> Self {
-        self.try_inverse().unwrap()
+        if self.iter().any(|x| x.is_infinite()) {
+            SMatrix::zeros()
+        } else {
+            self.try_inverse().unwrap()
+        }
     }
 }
 impl<A: Invertible, B: Invertible> Invertible for Split<A, B> {

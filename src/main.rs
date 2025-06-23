@@ -1,6 +1,6 @@
 // Hack to deal with nalgebra stack being slightly broken.
 #![allow(clippy::toplevel_ref_arg)]
-// #![allow(unused)]
+// #[allow(unused)]
 
 use contact::Contact;
 use cosserat::{CosseratBendTwist, CosseratRod, CosseratStretchShear};
@@ -8,7 +8,7 @@ use dyn_clone::DynClone;
 use macroquad::color;
 use macroquad::input::KeyCode;
 use macroquad::window::request_new_screen_size;
-use na::{matrix, stack, vector, DMatrixView, SMatrix, SVector};
+use na::{matrix, vector, DMatrixView, SMatrix, SVector};
 use nalgebra as na;
 use std::fmt::Debug;
 use std::{f32::consts::PI, ops::Deref};
@@ -31,6 +31,25 @@ use solver::{DualSolver, PrimalSolver, Solver, Solvers};
 mod ext;
 use ext::*;
 
+#[cfg(feature = "2d")]
+type Matrix2 = SMatrix<Real, 2, 2>;
+#[cfg(feature = "2d")]
+fn rotation_matrix(q: Scalar) -> Matrix2 {
+    let q = q.into_scalar();
+    matrix![
+        q.cos(), -q.sin();
+        q.sin(), q.cos()
+    ]
+}
+#[cfg(feature = "2d")]
+fn rotation_matrix_gradient(q: Scalar) -> Matrix2 {
+    let q = q.into_scalar();
+    matrix![
+        -q.sin(), -q.cos();
+        q.cos(), -q.sin()
+    ]
+}
+
 mod math {
     use crate::split::Split;
     use nalgebra::{self as na, Const, Dyn};
@@ -39,48 +58,62 @@ mod math {
     pub const P: usize = 2;
     #[cfg(feature = "2d")]
     pub const Q: usize = 1;
+    #[cfg(feature = "2d")]
+    pub const W: usize = 1;
     #[cfg(not(feature = "2d"))]
     pub const P: usize = 3;
     #[cfg(not(feature = "2d"))]
     pub const Q: usize = 4;
+    #[cfg(not(feature = "2d"))]
+    pub const W: usize = 3;
 
     pub type Real = f32;
     type SMatrix<const R: usize, const C: usize> = na::SMatrix<Real, R, C>;
+    type SVector<const N: usize> = na::SVector<Real, N>;
+    type RowSVector<const N: usize> = na::RowSVector<Real, N>;
 
     pub type Scalar = na::Matrix1<Real>;
     pub type DVector = na::DVector<Real>;
     pub type DMatrix = na::DMatrix<Real>;
-    pub type Vector = na::Vector3<Real>;
-    pub type RVector = na::RowVector3<Real>;
+    pub type Vector = SVector<P>;
+    pub type RVector = RowSVector<P>;
+    pub type VectorW = SVector<W>;
     pub type MatrixP = SMatrix<P, P>;
-    pub type MatrixPQ = SMatrix<P, Q>;
-    pub type MatrixQP = SMatrix<Q, P>;
     pub type MatrixQ = SMatrix<Q, Q>;
+    pub type MatrixW = SMatrix<W, W>;
+    pub type MatrixWQ = SMatrix<W, Q>;
+    pub type MatrixQW = SMatrix<Q, W>;
     pub type SMatrixP<const X: usize> = SMatrix<X, P>;
     pub type SMatrixQ<const X: usize> = SMatrix<X, Q>;
+    pub type SMatrixW<const X: usize> = SMatrix<X, W>;
     pub type DMatrixP = na::OMatrix<Real, Dyn, Const<P>>;
     pub type DMatrixQ = na::OMatrix<Real, Dyn, Const<Q>>;
+    pub type DMatrixW = na::OMatrix<Real, Dyn, Const<W>>;
 
+    #[cfg(feature = "2d")]
+    pub type PartialRotation = Scalar;
+    #[cfg(feature = "2d")]
+    pub type Rotation = Scalar;
+    #[cfg(not(feature = "2d"))]
     pub type PartialRotation = na::Quaternion<Real>;
+    #[cfg(not(feature = "2d"))]
     pub type Rotation = na::UnitQuaternion<Real>;
 
     pub type Position = Split<Vector, Rotation>;
     pub type Displacement = Split<Vector, PartialRotation>;
-    pub type Velocity = Split<Vector, Vector>;
-    pub type Force = Split<Vector, Vector>;
-    #[cfg(feature = "2d")]
-    pub type Mass = Split<Real, Real>;
-    #[cfg(not(feature = "2d"))]
-    pub type Mass = Split<Real, MatrixP>;
+    pub type Velocity = Split<Vector, VectorW>;
+    pub type Force = Split<Vector, VectorW>;
+    pub type Mass = Split<Real, MatrixW>;
     pub type Gradient<const V: usize> = Split<SMatrixP<V>, SMatrixQ<V>>;
     pub type DGradient = Split<DMatrixP, DMatrixQ>;
-    pub type Jacobian<const V: usize> = Split<SMatrixP<V>, SMatrixP<V>>;
-    pub type DJacobian = Split<DMatrixP, DMatrixP>;
-    pub type Hessian = Split<MatrixP, MatrixP>;
-    pub type HessDiag = Split<Vector, Vector>;
+    pub type Jacobian<const V: usize> = Split<SMatrixP<V>, SMatrixW<V>>;
+    pub type DJacobian = Split<DMatrixP, DMatrixW>;
+    pub type Hessian = Split<MatrixP, MatrixW>;
+    pub type HessDiag = Split<Vector, VectorW>;
 }
 use math::*;
 
+#[expect(unused)]
 #[cfg(not(feature = "2d"))]
 impl<const V: usize> Gradient<V> {
     fn dynamic(self) -> DGradient {
@@ -115,7 +148,7 @@ impl<const V: usize> Jacobian<V> {
             .collect::<Vec<_>>();
         Split::new(
             DMatrixP::from_rows(&linear_rows),
-            DMatrixP::from_rows(&angular_rows),
+            DMatrixW::from_rows(&angular_rows),
         )
     }
 }
@@ -123,11 +156,11 @@ impl<const V: usize> Jacobian<V> {
 #[cfg(feature = "2d")]
 impl Position {
     fn normalize(mut self) -> Self {
-        self.angular %= 4.0 * PI;
+        *self.angular.as_scalar_mut() %= 4.0 * PI;
         self
     }
-    fn kinematic_map(self) -> Split<MatrixV, MatrixQP> {
-        Split::new(MatrixV::identity(), MatrixQP::identity())
+    fn kinematic_map(self) -> Split<MatrixP, MatrixQW> {
+        Split::new(MatrixP::identity(), MatrixQW::identity())
     }
     fn step(self, velocity: Velocity) -> Self {
         (velocity + self).normalize()
@@ -135,7 +168,7 @@ impl Position {
 }
 #[cfg(not(feature = "2d"))]
 impl Position {
-    fn rotation_map(self) -> MatrixQP {
+    fn rotation_map(self) -> MatrixQW {
         let q = self.angular.quaternion().as_vector() / 2.0;
         matrix![
             q.w, q.z, -q.y;
@@ -144,7 +177,7 @@ impl Position {
             -q.x, -q.y, -q.z;
         ]
     }
-    fn kinematic_map(self) -> Split<MatrixP, MatrixQP> {
+    fn kinematic_map(self) -> Split<MatrixP, MatrixQW> {
         Split::new(MatrixP::identity(), self.rotation_map())
     }
     fn map_velocity(self, velocity: Velocity) -> Displacement {
@@ -185,6 +218,7 @@ trait Constraint<const N: usize, const V: usize>: Debug {
         let gradient = self.gradient(positions);
         (gradient, positions).map(|grad, pos| grad * pos.kinematic_map())
     }
+    #[expect(unused)]
     fn potential(&self, positions: [Position; N]) -> Real {
         let value = self.value(positions);
         (value.transpose() * diag(self.stiffness()) * value).into_scalar()
@@ -250,17 +284,20 @@ trait Constraint<const N: usize, const V: usize>: Debug {
 struct ConstraintWrapper<const N: usize, const V: usize, X: Constraint<N, V>>(X);
 
 trait DynConstraint: Debug + DynClone {
+    #[expect(unused)]
     fn dim_n(&self) -> usize;
     fn dim_v(&self) -> usize;
     fn value(&self, positions: &[Position]) -> DVector;
+    #[expect(unused)]
     fn gradient(&self, positions: &[Position]) -> Vec<DGradient>;
     fn jacobian(&self, positions: &[Position]) -> Vec<DJacobian>;
     fn stiffness(&self) -> DVector;
+    #[expect(unused)]
     fn potential(&self, positions: &[Position]) -> Real;
     fn force(&self, positions: &[Position]) -> Vec<Force>;
 
     fn hessian(&self, positions: &[Position]) -> Vec<Hessian>;
-    fn hessian_diag(&self, positions: &[Position]) -> Vec<Split>;
+    fn hessian_diag(&self, positions: &[Position]) -> Vec<HessDiag>;
 
     fn dual_preconditioner(&self, positions: &[Position], mass: &[Mass]) -> DMatrix;
     fn dual_preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector;
@@ -306,7 +343,7 @@ where
     fn hessian(&self, positions: &[Position]) -> Vec<Hessian> {
         self.0.hessian(positions.try_into().unwrap()).into()
     }
-    fn hessian_diag(&self, positions: &[Position]) -> Vec<Split> {
+    fn hessian_diag(&self, positions: &[Position]) -> Vec<HessDiag> {
         self.0.hessian_diag(positions.try_into().unwrap()).into()
     }
 
@@ -434,7 +471,7 @@ async fn main() {
 
     let mass: Vec<Mass> = vec![f32::INFINITY, 1.0, 1.0, 1.0, 1.0, 5.0]
         .into_iter()
-        .map(|x| Split::new(x, MatrixP::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
+        .map(|x| Split::new(x, MatrixW::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
         .collect();
 
     let position: Vec<Position> = vec![
@@ -556,29 +593,44 @@ async fn main() {
             for (i, (world, solver, color)) in worlds.iter().enumerate() {
                 draw_text(
                     &format!(
-                        "Solver: {} ({})",
+                        "Solver: {} ({}) [{} / {}], step {}",
                         solver.name(),
                         if solver.diag_precond() {
                             "Diag"
                         } else {
                             "Full"
-                        }
+                        },
+                        world.substeps,
+                        solver.iterations(),
+                        solver.constraint_step(),
                     ),
                     10.0,
-                    30.0 * (i + 1) as f32,
-                    30.0,
+                    20.0 * (i + 1) as f32,
+                    20.0,
                     *color,
                 );
 
                 for p in &world.position {
                     let pos = p.linear.xy() * scaling + offset;
                     draw_circle(pos.x, pos.y, 0.5 * scaling, Color { a: 0.5, ..*color });
-                    let rot_x = (p.angular * vector![0.5, 0.0, 0.0]).xy() * scaling + pos;
-                    draw_line(pos.x, pos.y, rot_x.x, rot_x.y, 3.0, WHITE);
-                    let rot_y = (p.angular * vector![0.0, 0.5, 0.0]).xy() * scaling + pos;
-                    draw_line(pos.x, pos.y, rot_y.x, rot_y.y, 3.0, GREEN);
-                    let rot_z = (p.angular * vector![0.0, 0.0, 0.5]).xy() * scaling + pos;
-                    draw_line(pos.x, pos.y, rot_z.x, rot_z.y, 3.0, BLUE);
+                    #[cfg(not(feature = "2d"))]
+                    {
+                        let rot_x = (p.angular * vector![0.5, 0.0, 0.0]).xy() * scaling + pos;
+                        draw_line(pos.x, pos.y, rot_x.x, rot_x.y, 3.0, WHITE);
+                        let rot_y = (p.angular * vector![0.0, 0.5, 0.0]).xy() * scaling + pos;
+                        draw_line(pos.x, pos.y, rot_y.x, rot_y.y, 3.0, GREEN);
+                        let rot_z = (p.angular * vector![0.0, 0.0, 0.5]).xy() * scaling + pos;
+                        draw_line(pos.x, pos.y, rot_z.x, rot_z.y, 3.0, BLUE);
+                    }
+                    #[cfg(feature = "2d")]
+                    {
+                        let rot_x =
+                            (rotation_matrix(p.angular) * vector![0.5, 0.0]) * scaling + pos;
+                        draw_line(pos.x, pos.y, rot_x.x, rot_x.y, 3.0, WHITE);
+                        let rot_y =
+                            (rotation_matrix(p.angular) * vector![0.0, 0.5]) * scaling + pos;
+                        draw_line(pos.x, pos.y, rot_y.x, rot_y.y, 3.0, GREEN);
+                    }
                 }
             }
             macroquad::window::next_frame().await

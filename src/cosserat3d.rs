@@ -1,4 +1,5 @@
 use super::*;
+use na::stack;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CosseratRod {
@@ -104,7 +105,7 @@ impl CosseratStretchShear {
                 .matrix()
                 .transpose()
     }
-    fn strain_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> MatrixPQ {
+    fn strain_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> MatrixWQ {
         /*let qm = pi.angular.lerp(&pj.angular, 0.5);
         let qij = UnitQuaternion::from_quaternion(qm);
         let qpart = (Quaternion::from_imag(pj.linear - pi.linear) * *qij);
@@ -171,7 +172,7 @@ impl CosseratBendTwist {
         2.0 / self.length
             * (*self.center_rotation(p).conjugate() * (*pj.angular - *pi.angular)).imag()
     }
-    fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> MatrixPQ {
+    fn darboux_gradient_ang(self, p @ [pi, pj]: [Position; 2]) -> MatrixWQ {
         /*let qm = pi.angular.lerp(&pj.angular, 0.5);
         let qij = UnitQuaternion::from_quaternion(qm);
         let p = qij.coords;
