@@ -97,7 +97,7 @@ impl Solver for PrimalSolver {
             let mut hessians = if self.diag_precond {
                 Either::Left(
                     mass.iter()
-                        .map(|m| Split::new(Vector::repeat(m.linear), Vector::repeat(m.angular)))
+                        .map(|m| Split::new(Vector::repeat(m.linear), m.angular.diagonal()))
                         .collect::<Vec<_>>(),
                 )
             } else {
@@ -156,7 +156,7 @@ impl Solver for PrimalSolver {
                 })
                 .collect::<Vec<_>>();
             for (i, step) in step.into_iter().enumerate() {
-                if mass[i].linear.is_infinite() || mass[i].angular.is_infinite() {
+                if mass[i].linear.is_infinite() || mass[i].angular.iter().any(|x| x.is_infinite()) {
                     continue;
                 }
                 velocity[i] -= self.constraint_step * step;

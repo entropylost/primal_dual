@@ -42,7 +42,7 @@ type Position = Split<Vector, Rotation>;
 type Displacement = Split<Vector, PartialRotation>;
 type Velocity = Split<Vector, Vector>;
 type Force = Split<Vector, Vector>;
-type Mass = Split<Real, Real>; // TODO: Probably sould be a diagonal matrix.
+type Mass = Split<Real, MatrixV>;
 type Gradient<const V: usize> = Split<SMatrix<Real, V, 3>, SMatrix<Real, V, 4>>;
 type DGradient = Split<na::MatrixXx3<Real>, na::MatrixXx4<Real>>;
 type Jacobian<const V: usize> = Split<SMatrix<Real, V, 3>, SMatrix<Real, V, 3>>;
@@ -413,7 +413,7 @@ async fn main() {
 
     let mass: Vec<Mass> = vec![f32::INFINITY, 1.0, 1.0, 1.0, 1.0, 5.0]
         .into_iter()
-        .map(|x| Split::new(x, 1.0 / 2.0 * x * 0.5 * 0.5))
+        .map(|x| Split::new(x, MatrixV::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
         .collect();
 
     let position: Vec<Position> = vec![
@@ -441,12 +441,7 @@ async fn main() {
 
     let dt = 1.0 / 60.0;
 
-    let rod = CosseratRod::resting_state(
-        0.5,
-        10000.0, // This makes the rod stiffness independent of time.
-        10000.0,
-        [position[0], position[1]],
-    );
+    let rod = CosseratRod::resting_state(0.5, 10000.0, 10000.0, [position[0], position[1]]);
 
     let constraints = vec![
         ConstraintBox::new([0, 1], CosseratStretchShear { rod }),
