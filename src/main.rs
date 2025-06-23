@@ -5,54 +5,83 @@
 use contact::Contact;
 use cosserat::{CosseratBendTwist, CosseratRod, CosseratStretchShear};
 use dyn_clone::DynClone;
-use iter_fixed::IntoIteratorFixed;
 use macroquad::color;
 use macroquad::input::KeyCode;
 use macroquad::window::request_new_screen_size;
-use nalgebra::{
-    self as na, matrix, stack, vector, DMatrixView, Matrix, MatrixXx1, MatrixXx2, MatrixXx3,
-    MatrixXx4, SMatrix, SVector,
-};
+use na::{matrix, stack, vector, DMatrixView, SMatrix, SVector};
+use nalgebra as na;
 use std::fmt::Debug;
 use std::{f32::consts::PI, ops::Deref};
 
 mod split;
+use split::Reciprocal;
 use split::{Invertible, Split};
+
 mod contact;
-mod cosserat;
+#[cfg(feature = "2d")]
+mod cosserat2d;
+#[cfg(feature = "2d")]
+use cosserat2d as cosserat;
+#[cfg(not(feature = "2d"))]
+mod cosserat3d;
+#[cfg(not(feature = "2d"))]
+use cosserat3d as cosserat;
 mod solver;
 use solver::{DualSolver, PrimalSolver, Solver, Solvers};
 mod ext;
 use ext::*;
 
-use crate::split::Reciprocal;
+mod math {
+    use crate::split::Split;
+    use nalgebra::{self as na, Const, Dyn};
 
-type Real = f32;
-type Scalar = na::Matrix1<Real>;
-type DVector = na::DVector<Real>;
-type DMatrix = na::DMatrix<Real>;
-type Vector = na::Vector3<Real>;
-type RVector = na::RowVector3<Real>;
-type MatrixV = na::Matrix3<Real>;
-type MatrixVR = na::Matrix3x4<Real>;
-type MatrixRV = na::Matrix4x3<Real>;
-type MatrixR = na::Matrix4<Real>;
+    #[cfg(feature = "2d")]
+    pub const P: usize = 2;
+    #[cfg(feature = "2d")]
+    pub const Q: usize = 1;
+    #[cfg(not(feature = "2d"))]
+    pub const P: usize = 3;
+    #[cfg(not(feature = "2d"))]
+    pub const Q: usize = 4;
 
-type PartialRotation = na::Quaternion<Real>;
-type Rotation = na::UnitQuaternion<Real>;
+    pub type Real = f32;
+    type SMatrix<const R: usize, const C: usize> = na::SMatrix<Real, R, C>;
 
-type Position = Split<Vector, Rotation>;
-type Displacement = Split<Vector, PartialRotation>;
-type Velocity = Split<Vector, Vector>;
-type Force = Split<Vector, Vector>;
-type Mass = Split<Real, MatrixV>;
-type Gradient<const V: usize> = Split<SMatrix<Real, V, 3>, SMatrix<Real, V, 4>>;
-type DGradient = Split<na::MatrixXx3<Real>, na::MatrixXx4<Real>>;
-type Jacobian<const V: usize> = Split<SMatrix<Real, V, 3>, SMatrix<Real, V, 3>>;
-type DJacobian = Split<na::MatrixXx3<Real>, na::MatrixXx3<Real>>;
-type Hessian = Split<na::Matrix3<Real>, na::Matrix3<Real>>;
-type HessDiag = Split<Vector, Vector>;
+    pub type Scalar = na::Matrix1<Real>;
+    pub type DVector = na::DVector<Real>;
+    pub type DMatrix = na::DMatrix<Real>;
+    pub type Vector = na::Vector3<Real>;
+    pub type RVector = na::RowVector3<Real>;
+    pub type MatrixP = SMatrix<P, P>;
+    pub type MatrixPQ = SMatrix<P, Q>;
+    pub type MatrixQP = SMatrix<Q, P>;
+    pub type MatrixQ = SMatrix<Q, Q>;
+    pub type SMatrixP<const X: usize> = SMatrix<X, P>;
+    pub type SMatrixQ<const X: usize> = SMatrix<X, Q>;
+    pub type DMatrixP = na::OMatrix<Real, Dyn, Const<P>>;
+    pub type DMatrixQ = na::OMatrix<Real, Dyn, Const<Q>>;
 
+    pub type PartialRotation = na::Quaternion<Real>;
+    pub type Rotation = na::UnitQuaternion<Real>;
+
+    pub type Position = Split<Vector, Rotation>;
+    pub type Displacement = Split<Vector, PartialRotation>;
+    pub type Velocity = Split<Vector, Vector>;
+    pub type Force = Split<Vector, Vector>;
+    #[cfg(feature = "2d")]
+    pub type Mass = Split<Real, Real>;
+    #[cfg(not(feature = "2d"))]
+    pub type Mass = Split<Real, MatrixP>;
+    pub type Gradient<const V: usize> = Split<SMatrixP<V>, SMatrixQ<V>>;
+    pub type DGradient = Split<DMatrixP, DMatrixQ>;
+    pub type Jacobian<const V: usize> = Split<SMatrixP<V>, SMatrixP<V>>;
+    pub type DJacobian = Split<DMatrixP, DMatrixP>;
+    pub type Hessian = Split<MatrixP, MatrixP>;
+    pub type HessDiag = Split<Vector, Vector>;
+}
+use math::*;
+
+#[cfg(not(feature = "2d"))]
 impl<const V: usize> Gradient<V> {
     fn dynamic(self) -> DGradient {
         let linear_rows = self
@@ -66,8 +95,8 @@ impl<const V: usize> Gradient<V> {
             .map(|x| x.clone_owned())
             .collect::<Vec<_>>();
         Split::new(
-            MatrixXx3::from_rows(&linear_rows),
-            MatrixXx4::from_rows(&angular_rows),
+            DMatrixP::from_rows(&linear_rows),
+            DMatrixQ::from_rows(&angular_rows),
         )
     }
 }
@@ -85,14 +114,28 @@ impl<const V: usize> Jacobian<V> {
             .map(|x| x.clone_owned())
             .collect::<Vec<_>>();
         Split::new(
-            MatrixXx3::from_rows(&linear_rows),
-            MatrixXx3::from_rows(&angular_rows),
+            DMatrixP::from_rows(&linear_rows),
+            DMatrixP::from_rows(&angular_rows),
         )
     }
 }
 
+#[cfg(feature = "2d")]
 impl Position {
-    fn rotation_map(self) -> MatrixRV {
+    fn normalize(mut self) -> Self {
+        self.angular %= 4.0 * PI;
+        self
+    }
+    fn kinematic_map(self) -> Split<MatrixV, MatrixQP> {
+        Split::new(MatrixV::identity(), MatrixQP::identity())
+    }
+    fn step(self, velocity: Velocity) -> Self {
+        (velocity + self).normalize()
+    }
+}
+#[cfg(not(feature = "2d"))]
+impl Position {
+    fn rotation_map(self) -> MatrixQP {
         let q = self.angular.quaternion().as_vector() / 2.0;
         matrix![
             q.w, q.z, -q.y;
@@ -101,8 +144,8 @@ impl Position {
             -q.x, -q.y, -q.z;
         ]
     }
-    fn kinematic_map(self) -> Split<MatrixV, MatrixRV> {
-        Split::new(MatrixV::identity(), self.rotation_map())
+    fn kinematic_map(self) -> Split<MatrixP, MatrixQP> {
+        Split::new(MatrixP::identity(), self.rotation_map())
     }
     fn map_velocity(self, velocity: Velocity) -> Displacement {
         Displacement {
@@ -121,6 +164,7 @@ impl Position {
         (self.map_velocity(velocity) + self.unconstrain()).normalize()
     }
 }
+#[cfg(not(feature = "2d"))]
 impl Displacement {
     fn normalize(self) -> Position {
         Position {
@@ -143,7 +187,7 @@ trait Constraint<const N: usize, const V: usize>: Debug {
     }
     fn potential(&self, positions: [Position; N]) -> Real {
         let value = self.value(positions);
-        *(value.transpose() * diag(self.stiffness()) * value).as_scalar()
+        (value.transpose() * diag(self.stiffness()) * value).into_scalar()
     }
     fn force(&self, positions: [Position; N]) -> [Force; N] {
         let value = self.value(positions);
@@ -390,7 +434,7 @@ async fn main() {
 
     let mass: Vec<Mass> = vec![f32::INFINITY, 1.0, 1.0, 1.0, 1.0, 5.0]
         .into_iter()
-        .map(|x| Split::new(x, MatrixV::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
+        .map(|x| Split::new(x, MatrixP::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
         .collect();
 
     let position: Vec<Position> = vec![
