@@ -1,5 +1,6 @@
+use nalgebra::stack;
+
 use super::*;
-use na::stack;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CosseratStiffness {

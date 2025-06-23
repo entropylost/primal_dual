@@ -223,5 +223,3 @@ impl Solver for DualSolver {
         }
     }
 }
-
-pub struct AVBDSolver {}

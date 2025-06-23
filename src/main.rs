@@ -10,7 +10,7 @@ use dyn_clone::DynClone;
 use macroquad::color;
 use macroquad::input::KeyCode;
 use macroquad::window::request_new_screen_size;
-use nalgebra::{self as na, matrix, vector, DMatrixView, DVectorView, DVectorViewMut};
+use nalgebra::{matrix, vector, DMatrixView, DVectorView, DVectorViewMut};
 
 mod contact;
 #[cfg(feature = "2d")]
