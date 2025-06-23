@@ -1,41 +1,45 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy)]
-pub struct CosseratRod {
+pub struct CosseratStiffness {
     pub radius: Real,
     pub young_modulus: Real,
     pub shear_modulus: Real,
+}
+impl CosseratStiffness {
+    pub fn new(radius: Real, young_modulus: Real, shear_modulus: Real) -> Self {
+        Self {
+            radius,
+            young_modulus,
+            shear_modulus,
+        }
+    }
+    pub fn stretch_shear(&self, length: Real) -> Vector {
+        let s = PI * self.radius.powi(2);
+        let a = 5.0 / 6.0 * s;
+        Vector::new(self.young_modulus * s, self.shear_modulus * a) * length
+    }
+    pub fn bend_twist(&self, length: Real) -> Scalar {
+        let i = PI * self.radius.powi(4) / 4.0;
+        let _j = PI * self.radius.powi(4) / 2.0;
+        Scalar::new(self.young_modulus * i) * length
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CosseratRod {
     pub length: Real,
     pub rest_rotation: Rotation,
 }
 impl CosseratRod {
-    pub fn resting_state(
-        rod_radius: Real,
-        young_modulus: Real,
-        shear_modulus: Real,
-        [pi, pj]: [Position; 2],
-    ) -> Self {
+    pub fn resting_state([pi, pj]: [Position; 2]) -> Self {
         let delta = pj.linear - pi.linear;
         let length = delta.norm();
         let rest_rotation = Scalar::new(delta.y.atan2(delta.x));
         Self {
-            radius: rod_radius,
-            young_modulus,
-            shear_modulus,
             length,
             rest_rotation,
         }
-    }
-    fn stretch_shear(self) -> Vector {
-        let s = PI * self.radius.powi(2);
-        let a = 5.0 / 6.0 * s;
-        Vector::new(self.young_modulus * s, self.shear_modulus * a)
-    }
-    fn bend_twist(self) -> Scalar {
-        // TODO: These assume a 3d cylindrical rod, but it doesn't particularly matter.
-        let i = PI * self.radius.powi(4) / 4.0;
-        let _j = PI * self.radius.powi(4) / 2.0;
-        Scalar::new(self.young_modulus * i)
     }
     fn center_rotation(self, [pi, pj]: [Position; 2]) -> Rotation {
         (pi.angular + pj.angular) / 2.0
@@ -88,13 +92,6 @@ impl Constraint<2, 2> for CosseratStretchShear {
             Split::new(-grad_lin, grad_ang),
         ]
     }
-    fn stiffness(&self) -> Vector {
-        self.stretch_shear() * self.length
-    }
-    fn set_timestep(&mut self, dt: Real) {
-        self.rod.young_modulus *= dt * dt;
-        self.rod.shear_modulus *= dt * dt;
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,12 +126,5 @@ impl Constraint<2, 1> for CosseratBendTwist {
             Split::from_angular(grad_ang),
             Split::from_angular(-grad_ang),
         ]
-    }
-    fn stiffness(&self) -> Scalar {
-        self.bend_twist() * self.length
-    }
-    fn set_timestep(&mut self, dt: Real) {
-        self.rod.young_modulus *= dt * dt;
-        self.rod.shear_modulus *= dt * dt;
     }
 }

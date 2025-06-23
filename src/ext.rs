@@ -1,7 +1,7 @@
 use std::ops::AddAssign;
 
 use iter_fixed::IntoIteratorFixed;
-use nalgebra::{SMatrix, SVector, Scalar};
+use nalgebra::{allocator::Allocator, DefaultAllocator, Dim, RawStorage, SMatrix, SVector, Scalar};
 use num_traits::Zero;
 
 pub trait ArraySum {
@@ -44,4 +44,18 @@ impl<const N: usize, T, S> ZipMap<N> for ([T; N], [S; N]) {
 
 pub fn diag<T: Scalar + Zero, const N: usize>(v: SVector<T, N>) -> SMatrix<T, N, N> {
     SMatrix::from_diagonal(&v)
+}
+
+pub trait Transpose {
+    type Output;
+    fn t(&self) -> Self::Output;
+}
+impl<T: Scalar, R: Dim, C: Dim, S: RawStorage<T, R, C>> Transpose for nalgebra::Matrix<T, R, C, S>
+where
+    DefaultAllocator: Allocator<C, R>,
+{
+    type Output = nalgebra::OMatrix<T, C, R>;
+    fn t(&self) -> Self::Output {
+        self.transpose()
+    }
 }

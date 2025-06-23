@@ -2,48 +2,53 @@ use super::*;
 use na::stack;
 
 #[derive(Debug, Clone, Copy)]
-pub struct CosseratRod {
+pub struct CosseratStiffness {
     pub radius: Real,
     pub young_modulus: Real,
     pub shear_modulus: Real,
-    pub length: Real,
-    pub rest_rotation: Rotation,
 }
-impl CosseratRod {
-    pub fn resting_state(
-        rod_radius: Real,
-        young_modulus: Real,
-        shear_modulus: Real,
-        [pi, pj]: [Position; 2],
-    ) -> Self {
-        let delta = pj.linear - pi.linear;
-        let length = delta.norm();
-        let rest_rotation = Rotation::rotation_between(&Vector::z(), &delta).unwrap();
+impl CosseratStiffness {
+    pub fn new(radius: Real, young_modulus: Real, shear_modulus: Real) -> Self {
         Self {
-            radius: rod_radius,
+            radius,
             young_modulus,
             shear_modulus,
-            length,
-            rest_rotation,
         }
     }
-    fn stretch_shear(self) -> Vector {
+    pub fn stretch_shear(&self, length: Real) -> Vector {
         let s = PI * self.radius.powi(2);
         let a = 5.0 / 6.0 * s;
         Vector::new(
             self.shear_modulus * a,
             self.shear_modulus * a,
             self.young_modulus * s,
-        )
+        ) * length
     }
-    fn bend_twist(self) -> Vector {
+    pub fn bend_twist(&self, length: Real) -> Vector {
         let i = PI * self.radius.powi(4) / 4.0;
         let j = PI * self.radius.powi(4) / 2.0;
         Vector::new(
             self.young_modulus * i,
             self.young_modulus * i,
             self.shear_modulus * j,
-        )
+        ) * length
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CosseratRod {
+    pub length: Real,
+    pub rest_rotation: Rotation,
+}
+impl CosseratRod {
+    pub fn resting_state([pi, pj]: [Position; 2]) -> Self {
+        let delta = pj.linear - pi.linear;
+        let length = delta.norm();
+        let rest_rotation = Rotation::rotation_between(&Vector::z(), &delta).unwrap();
+        Self {
+            length,
+            rest_rotation,
+        }
     }
     fn center_rotation(self, [pi, pj]: [Position; 2]) -> Rotation {
         pi.angular.nlerp(&pj.angular, 0.5)
@@ -147,13 +152,6 @@ impl Constraint<2, 3> for CosseratStretchShear {
             Split::new(-grad_lin, grad_ang),
         ]
     }
-    fn stiffness(&self) -> Vector {
-        self.stretch_shear() * self.length
-    }
-    fn set_timestep(&mut self, dt: Real) {
-        self.rod.young_modulus *= dt * dt;
-        self.rod.shear_modulus *= dt * dt;
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -213,12 +211,5 @@ impl Constraint<2, 3> for CosseratBendTwist {
             Split::from_angular(grad_ang),
             Split::from_angular(-grad_ang),
         ]
-    }
-    fn stiffness(&self) -> Vector {
-        self.bend_twist() * self.length
-    }
-    fn set_timestep(&mut self, dt: Real) {
-        self.rod.young_modulus *= dt * dt;
-        self.rod.shear_modulus *= dt * dt;
     }
 }

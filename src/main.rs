@@ -2,20 +2,15 @@
 #![allow(clippy::toplevel_ref_arg)]
 // #[allow(unused)]
 
-use contact::Contact;
-use cosserat::{CosseratBendTwist, CosseratRod, CosseratStretchShear};
+use std::f32::consts::PI;
+use std::fmt::Debug;
+use std::ops::Deref;
+
 use dyn_clone::DynClone;
 use macroquad::color;
 use macroquad::input::KeyCode;
 use macroquad::window::request_new_screen_size;
-use na::{matrix, vector, DMatrixView, SMatrix, SVector};
-use nalgebra as na;
-use std::fmt::Debug;
-use std::{f32::consts::PI, ops::Deref};
-
-mod split;
-use split::Reciprocal;
-use split::{Invertible, Split};
+use nalgebra::{self as na, matrix, vector, DMatrixView, DVectorView, DVectorViewMut};
 
 mod contact;
 #[cfg(feature = "2d")]
@@ -26,33 +21,20 @@ use cosserat2d as cosserat;
 mod cosserat3d;
 #[cfg(not(feature = "2d"))]
 use cosserat3d as cosserat;
-mod solver;
-use solver::{DualSolver, PrimalSolver, Solver, Solvers};
 mod ext;
-use ext::*;
+mod solver;
 
-#[cfg(feature = "2d")]
-type Matrix2 = SMatrix<Real, 2, 2>;
-#[cfg(feature = "2d")]
-fn rotation_matrix(q: Scalar) -> Matrix2 {
-    let q = q.into_scalar();
-    matrix![
-        q.cos(), -q.sin();
-        q.sin(), q.cos()
-    ]
-}
-#[cfg(feature = "2d")]
-fn rotation_matrix_gradient(q: Scalar) -> Matrix2 {
-    let q = q.into_scalar();
-    matrix![
-        -q.sin(), -q.cos();
-        q.cos(), -q.sin()
-    ]
-}
+mod split;
+use contact::Contact;
+use cosserat::{CosseratBendTwist, CosseratRod, CosseratStiffness, CosseratStretchShear};
+use ext::*;
+use solver::{DualSolver, PrimalSolver, Solver, Solvers};
+use split::{Invertible, Reciprocal, Split};
 
 mod math {
-    use crate::split::Split;
     use nalgebra::{self as na, Const, Dyn};
+
+    use crate::split::Split;
 
     #[cfg(feature = "2d")]
     pub const P: usize = 2;
@@ -68,9 +50,9 @@ mod math {
     pub const W: usize = 3;
 
     pub type Real = f32;
-    type SMatrix<const R: usize, const C: usize> = na::SMatrix<Real, R, C>;
-    type SVector<const N: usize> = na::SVector<Real, N>;
-    type RowSVector<const N: usize> = na::RowSVector<Real, N>;
+    pub type SMatrix<const R: usize, const C: usize> = na::SMatrix<Real, R, C>;
+    pub type SVector<const N: usize> = na::SVector<Real, N>;
+    pub type RowSVector<const N: usize> = na::RowSVector<Real, N>;
 
     pub type Scalar = na::Matrix1<Real>;
     pub type DVector = na::DVector<Real>;
@@ -112,6 +94,25 @@ mod math {
     pub type HessDiag = Split<Vector, VectorW>;
 }
 use math::*;
+
+#[cfg(feature = "2d")]
+type Matrix2 = SMatrix<2, 2>;
+#[cfg(feature = "2d")]
+fn rotation_matrix(q: Scalar) -> Matrix2 {
+    let q = q.into_scalar();
+    matrix![
+        q.cos(), -q.sin();
+        q.sin(), q.cos()
+    ]
+}
+#[cfg(feature = "2d")]
+fn rotation_matrix_gradient(q: Scalar) -> Matrix2 {
+    let q = q.into_scalar();
+    matrix![
+        -q.sin(), -q.cos();
+        q.cos(), -q.sin()
+    ]
+}
 
 #[expect(unused)]
 #[cfg(not(feature = "2d"))]
@@ -208,72 +209,71 @@ impl Displacement {
 }
 
 trait Constraint<const N: usize, const V: usize>: Debug {
-    fn value(&self, positions: [Position; N]) -> SVector<Real, V>;
+    fn value(&self, positions: [Position; N]) -> SVector<V>;
     fn gradient(&self, positions: [Position; N]) -> [Gradient<V>; N];
-    fn stiffness(&self) -> SVector<Real, V>;
-
-    fn set_timestep(&mut self, dt: Real);
 
     fn jacobian(&self, positions: [Position; N]) -> [Jacobian<V>; N] {
         let gradient = self.gradient(positions);
         (gradient, positions).map(|grad, pos| grad * pos.kinematic_map())
     }
     #[expect(unused)]
-    fn potential(&self, positions: [Position; N]) -> Real {
+    fn potential(&self, stiffness: SVector<V>, positions: [Position; N]) -> Real {
         let value = self.value(positions);
-        (value.transpose() * diag(self.stiffness()) * value).into_scalar()
+        (value.t() * diag(stiffness) * value).into_scalar()
     }
-    fn force(&self, positions: [Position; N]) -> [Force; N] {
+    fn force(&self, stiffness: SVector<V>, positions: [Position; N]) -> [Force; N] {
         let value = self.value(positions);
         self.jacobian(positions).map(|jc| {
             Split::new(
-                -jc.linear.transpose() * diag(self.stiffness()) * value,
-                -jc.angular.transpose() * diag(self.stiffness()) * value,
+                -jc.linear.t() * diag(stiffness) * value,
+                -jc.angular.t() * diag(stiffness) * value,
             )
         })
     }
     // TODO: This treats the linear and angular parts as independent.
-    // Instead, it should return a 6x6 matrix with a jc.linear.transpose() * jc.angular coefficient.
-    fn hessian(&self, positions: [Position; N]) -> [Hessian; N] {
+    // Instead, it should return a 6x6 matrix with a jc.linear.t() * jc.angular coefficient.
+    fn hessian(&self, stiffness: SVector<V>, positions: [Position; N]) -> [Hessian; N] {
         self.jacobian(positions).map(|jc| {
             Split::new(
-                jc.linear.transpose() * diag(self.stiffness()) * jc.linear,
-                jc.angular.transpose() * diag(self.stiffness()) * jc.angular,
+                jc.linear.t() * diag(stiffness) * jc.linear,
+                jc.angular.t() * diag(stiffness) * jc.angular,
             )
         })
     }
-    fn hessian_diag(&self, positions: [Position; N]) -> [HessDiag; N] {
+    fn hessian_diag(&self, stiffness: SVector<V>, positions: [Position; N]) -> [HessDiag; N] {
         self.jacobian(positions).map(|jc| {
             Split::new(
-                (jc.linear.transpose() * diag(self.stiffness()) * jc.linear).diagonal(),
-                (jc.angular.transpose() * diag(self.stiffness()) * jc.angular).diagonal(),
+                (jc.linear.t() * diag(stiffness) * jc.linear).diagonal(),
+                (jc.angular.t() * diag(stiffness) * jc.angular).diagonal(),
             )
         })
     }
     fn dual_preconditioner(
         &self,
+        stiffness: SVector<V>,
         positions: [Position; N],
         masses: [Mass; N],
-    ) -> SMatrix<Real, V, V> {
-        let denom = diag(self.stiffness().reciprocal())
+    ) -> SMatrix<V, V> {
+        let denom = diag(stiffness.reciprocal())
             + (self.jacobian(positions), masses)
                 .map(|jc, mass| {
-                    jc.linear * mass.linear.inverse() * jc.linear.transpose()
-                        + jc.angular * mass.angular.inverse() * jc.angular.transpose()
+                    jc.linear * mass.linear.inverse() * jc.linear.t()
+                        + jc.angular * mass.angular.inverse() * jc.angular.t()
                 })
                 .sum();
         denom.try_inverse().unwrap()
     }
     fn dual_preconditioner_diag(
         &self,
+        stiffness: SVector<V>,
         positions: [Position; N],
         masses: [Mass; N],
-    ) -> SVector<Real, V> {
-        let denom = self.stiffness().reciprocal()
+    ) -> SVector<V> {
+        let denom = stiffness.reciprocal()
             + (self.jacobian(positions), masses)
                 .map(|jc, mass| {
-                    (jc.linear * mass.linear.inverse() * jc.linear.transpose()).diagonal()
-                        + (jc.angular * mass.angular.inverse() * jc.angular.transpose()).diagonal()
+                    (jc.linear * mass.linear.inverse() * jc.linear.t()).diagonal()
+                        + (jc.angular * mass.angular.inverse() * jc.angular.t()).diagonal()
                 })
                 .sum();
         denom.reciprocal()
@@ -281,7 +281,7 @@ trait Constraint<const N: usize, const V: usize>: Debug {
 }
 
 #[derive(Debug, Clone)]
-struct ConstraintWrapper<const N: usize, const V: usize, X: Constraint<N, V>>(X);
+struct ConstraintWrapper<const N: usize, const V: usize, X: Constraint<N, V>>(X, SVector<V>);
 
 trait DynConstraint: Debug + DynClone {
     #[expect(unused)]
@@ -291,7 +291,6 @@ trait DynConstraint: Debug + DynClone {
     #[expect(unused)]
     fn gradient(&self, positions: &[Position]) -> Vec<DGradient>;
     fn jacobian(&self, positions: &[Position]) -> Vec<DJacobian>;
-    fn stiffness(&self) -> DVector;
     #[expect(unused)]
     fn potential(&self, positions: &[Position]) -> Real;
     fn force(&self, positions: &[Position]) -> Vec<Force>;
@@ -302,7 +301,8 @@ trait DynConstraint: Debug + DynClone {
     fn dual_preconditioner(&self, positions: &[Position], mass: &[Mass]) -> DMatrix;
     fn dual_preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector;
 
-    fn set_timestep(&mut self, dt: Real);
+    fn stiffness(&self) -> DVectorView<Real>;
+    fn stiffness_mut(&mut self) -> DVectorViewMut<Real>;
 }
 
 impl<const N: usize, const V: usize, X> DynConstraint for ConstraintWrapper<N, V, X>
@@ -330,39 +330,48 @@ where
             .map(|x| x.dynamic())
             .into()
     }
-    fn stiffness(&self) -> DVector {
-        DVector::from_column_slice(self.0.stiffness().as_slice())
-    }
     fn potential(&self, positions: &[Position]) -> Real {
-        self.0.potential(positions.try_into().unwrap())
+        self.0.potential(self.1, positions.try_into().unwrap())
     }
     fn force(&self, positions: &[Position]) -> Vec<Force> {
-        self.0.force(positions.try_into().unwrap()).into()
+        self.0.force(self.1, positions.try_into().unwrap()).into()
     }
 
     fn hessian(&self, positions: &[Position]) -> Vec<Hessian> {
-        self.0.hessian(positions.try_into().unwrap()).into()
+        self.0.hessian(self.1, positions.try_into().unwrap()).into()
     }
     fn hessian_diag(&self, positions: &[Position]) -> Vec<HessDiag> {
-        self.0.hessian_diag(positions.try_into().unwrap()).into()
+        self.0
+            .hessian_diag(self.1, positions.try_into().unwrap())
+            .into()
     }
 
     fn dual_preconditioner(&self, positions: &[Position], mass: &[Mass]) -> DMatrix {
-        let pc = self
-            .0
-            .dual_preconditioner(positions.try_into().unwrap(), mass.try_into().unwrap());
+        let pc = self.0.dual_preconditioner(
+            self.1,
+            positions.try_into().unwrap(),
+            mass.try_into().unwrap(),
+        );
         let v: DMatrixView<f32> = pc.as_view();
         v.clone_owned()
     }
     fn dual_preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector {
         DVector::from_column_slice(
             self.0
-                .dual_preconditioner_diag(positions.try_into().unwrap(), mass.try_into().unwrap())
+                .dual_preconditioner_diag(
+                    self.1,
+                    positions.try_into().unwrap(),
+                    mass.try_into().unwrap(),
+                )
                 .as_slice(),
         )
     }
-    fn set_timestep(&mut self, dt: Real) {
-        self.0.set_timestep(dt);
+
+    fn stiffness(&self) -> DVectorView<Real> {
+        self.1.as_view()
+    }
+    fn stiffness_mut(&mut self) -> DVectorViewMut<Real> {
+        self.1.as_view_mut()
     }
 }
 dyn_clone::clone_trait_object!(DynConstraint);
@@ -376,10 +385,11 @@ impl ConstraintBox {
     fn new<const N: usize, const V: usize>(
         targets: [usize; N],
         constraint: impl Constraint<N, V> + Clone + 'static,
+        stiffness: SVector<V>,
     ) -> Self {
         Self {
             targets: targets.to_vec(),
-            constraint: Box::new(ConstraintWrapper(constraint)),
+            constraint: Box::new(ConstraintWrapper(constraint, stiffness)),
         }
     }
 }
@@ -414,7 +424,8 @@ impl World {
         }
         let mut constraints = constraints.to_vec();
         for constraint in &mut constraints {
-            constraint.constraint.set_timestep(dt);
+            let mut stiffness = constraint.constraint.stiffness_mut();
+            stiffness *= dt * dt;
         }
         Self {
             mass,
@@ -444,10 +455,10 @@ impl World {
                         constraints.push(ConstraintBox::new(
                             [i, j],
                             Contact {
-                                normal: (pi.linear - pj.linear).normalize().transpose(),
-                                stiffness: self.contact_stiffness,
+                                normal: (pi.linear - pj.linear).normalize().t(),
                                 length: 1.0,
                             },
+                            Scalar::new(self.contact_stiffness),
                         ));
                     }
                 }
@@ -499,17 +510,20 @@ async fn main() {
 
     let dt = 1.0 / 60.0;
 
-    let rod = CosseratRod::resting_state(0.5, 10000.0, 10000.0, [position[0], position[1]]);
+    let rod = CosseratRod::resting_state([position[0], position[1]]);
+    let stiffness = CosseratStiffness::new(0.5, 10000.0, 10000.0);
+    let ss = stiffness.stretch_shear(rod.length);
+    let bt = stiffness.bend_twist(rod.length);
 
     let constraints = vec![
-        ConstraintBox::new([0, 1], CosseratStretchShear { rod }),
-        ConstraintBox::new([0, 1], CosseratBendTwist { rod }),
-        ConstraintBox::new([1, 2], CosseratStretchShear { rod }),
-        ConstraintBox::new([1, 2], CosseratBendTwist { rod }),
-        ConstraintBox::new([2, 3], CosseratStretchShear { rod }),
-        ConstraintBox::new([2, 3], CosseratBendTwist { rod }),
-        ConstraintBox::new([3, 4], CosseratStretchShear { rod }),
-        ConstraintBox::new([3, 4], CosseratBendTwist { rod }),
+        ConstraintBox::new([0, 1], CosseratStretchShear { rod }, ss),
+        ConstraintBox::new([0, 1], CosseratBendTwist { rod }, bt),
+        ConstraintBox::new([1, 2], CosseratStretchShear { rod }, ss),
+        ConstraintBox::new([1, 2], CosseratBendTwist { rod }, bt),
+        ConstraintBox::new([2, 3], CosseratStretchShear { rod }, ss),
+        ConstraintBox::new([2, 3], CosseratBendTwist { rod }, bt),
+        ConstraintBox::new([3, 4], CosseratStretchShear { rod }, ss),
+        ConstraintBox::new([3, 4], CosseratBendTwist { rod }, bt),
     ];
 
     let mut worlds = [

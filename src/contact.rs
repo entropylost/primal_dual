@@ -4,7 +4,6 @@ use super::*;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Rod {
     pub(crate) normal: RVector,
-    pub(crate) stiffness: Real,
     pub(crate) length: Real,
 }
 impl Constraint<2, 1> for Rod {
@@ -18,18 +17,11 @@ impl Constraint<2, 1> for Rod {
             Split::from_linear(-self.normal),
         ]
     }
-    fn stiffness(&self) -> Scalar {
-        Scalar::new(self.stiffness)
-    }
-    fn set_timestep(&mut self, dt: Real) {
-        self.stiffness *= dt * dt;
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Contact {
     pub(crate) normal: RVector,
-    pub(crate) stiffness: Real,
     pub(crate) length: Real,
 }
 impl Constraint<2, 1> for Contact {
@@ -43,18 +35,11 @@ impl Constraint<2, 1> for Contact {
             Split::from_linear(-self.normal),
         ]
     }
-    fn stiffness(&self) -> Scalar {
-        Scalar::new(self.stiffness)
-    }
-    fn set_timestep(&mut self, dt: Real) {
-        self.stiffness *= dt * dt;
-    }
 }
 
 #[expect(unused)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RadialContact {
-    pub(crate) stiffness: Real,
     pub(crate) length: Real,
 }
 impl Constraint<2, 1> for RadialContact {
@@ -65,11 +50,5 @@ impl Constraint<2, 1> for RadialContact {
     fn gradient(&self, [pi, pj]: [Position; 2]) -> [Gradient<1>; 2] {
         let normal = (pi.linear - pj.linear).normalize().transpose();
         [Split::from_linear(normal), Split::from_linear(-normal)]
-    }
-    fn stiffness(&self) -> Scalar {
-        Scalar::new(self.stiffness)
-    }
-    fn set_timestep(&mut self, dt: Real) {
-        self.stiffness *= dt * dt;
     }
 }
