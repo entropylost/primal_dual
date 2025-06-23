@@ -97,13 +97,18 @@ impl Solver for PrimalSolver {
             let mut hessians = if self.diag_precond {
                 Either::Left(
                     mass.iter()
-                        .map(|m| Split::new(Vector::repeat(m.linear), m.angular))
+                        .map(|m| Split::new(Vector::repeat(m.linear), Vector::repeat(m.angular)))
                         .collect::<Vec<_>>(),
                 )
             } else {
                 Either::Right(
                     mass.iter()
-                        .map(|m| Split::new(MatrixV::identity() * m.linear, m.angular))
+                        .map(|m| {
+                            Split::new(
+                                MatrixV::identity() * m.linear,
+                                MatrixV::identity() * m.angular,
+                            )
+                        })
                         .collect::<Vec<_>>(),
                 )
             };
@@ -209,8 +214,7 @@ impl Solver for DualSolver {
                     velocity[k].linear +=
                         mass[k].linear.inverse() * jacobian[j].linear.transpose() * &delta;
                     velocity[k].angular +=
-                        (mass[k].angular.inverse() * jacobian[j].angular.transpose() * &delta)
-                            .into_scalar();
+                        mass[k].angular.inverse() * jacobian[j].angular.transpose() * &delta;
                 }
             }
             for i in 0..particles {
