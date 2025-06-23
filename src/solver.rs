@@ -145,7 +145,7 @@ impl Solver for PrimalSolver {
                     let grad = mass[i] * (velocity[i] - last_velocity[i]) - forces[i];
                     match &hessians {
                         Either::Left(hessians) => {
-                            let precond = hessians[i].recip();
+                            let precond = hessians[i].reciprocal();
                             precond.component_mul(grad)
                         }
                         Either::Right(hessians) => {

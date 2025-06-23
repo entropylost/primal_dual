@@ -362,6 +362,7 @@ dependencies = [
  "macroquad",
  "nalgebra",
  "num-complex",
+ "num-traits",
  "rand",
 ]
 

@@ -18,11 +18,14 @@ use std::{f32::consts::PI, ops::Deref};
 
 mod split;
 use split::{Invertible, Split};
-
-use crate::solver::{DualSolver, PrimalSolver, Solver, Solvers};
 mod contact;
 mod cosserat;
 mod solver;
+use solver::{DualSolver, PrimalSolver, Solver, Solvers};
+mod ext;
+use ext::*;
+
+use crate::split::Reciprocal;
 
 type Real = f32;
 type Scalar = na::Matrix1<Real>;
@@ -136,71 +139,51 @@ trait Constraint<const N: usize, const V: usize>: Debug {
 
     fn jacobian(&self, positions: [Position; N]) -> [Jacobian<V>; N] {
         let gradient = self.gradient(positions);
-        gradient
-            .into_iter_fixed()
-            .zip(positions)
-            .map(|(grad, pos)| grad * pos.kinematic_map())
-            .collect()
+        (gradient, positions).map(|grad, pos| grad * pos.kinematic_map())
     }
     fn potential(&self, positions: [Position; N]) -> Real {
         let value = self.value(positions);
-        *(value.transpose() * Matrix::from_diagonal(&self.stiffness()) * value).as_scalar()
+        *(value.transpose() * diag(self.stiffness()) * value).as_scalar()
     }
     fn force(&self, positions: [Position; N]) -> [Force; N] {
-        let jacobian = self.jacobian(positions);
         let value = self.value(positions);
-        jacobian
-            .into_iter_fixed()
-            .map(|jc| {
-                Split::new(
-                    -jc.linear.transpose() * Matrix::from_diagonal(&self.stiffness()) * value,
-                    -jc.angular.transpose() * Matrix::from_diagonal(&self.stiffness()) * value,
-                )
-            })
-            .collect()
+        self.jacobian(positions).map(|jc| {
+            Split::new(
+                -jc.linear.transpose() * diag(self.stiffness()) * value,
+                -jc.angular.transpose() * diag(self.stiffness()) * value,
+            )
+        })
     }
+    // TODO: This treats the linear and angular parts as independent.
+    // Instead, it should return a 6x6 matrix with a jc.linear.transpose() * jc.angular coefficient.
     fn hessian(&self, positions: [Position; N]) -> [Hessian; N] {
-        self.jacobian(positions)
-            .into_iter_fixed()
-            .map(|jc| {
-                Split::new(
-                    jc.linear.transpose() * Matrix::from_diagonal(&self.stiffness()) * jc.linear,
-                    jc.angular.transpose() * Matrix::from_diagonal(&self.stiffness()) * jc.angular,
-                )
-            })
-            .collect()
+        self.jacobian(positions).map(|jc| {
+            Split::new(
+                jc.linear.transpose() * diag(self.stiffness()) * jc.linear,
+                jc.angular.transpose() * diag(self.stiffness()) * jc.angular,
+            )
+        })
     }
     fn hessian_diag(&self, positions: [Position; N]) -> [HessDiag; N] {
-        self.jacobian(positions)
-            .into_iter_fixed()
-            .map(|jc| {
-                Split::new(
-                    (jc.linear.transpose() * Matrix::from_diagonal(&self.stiffness()) * jc.linear)
-                        .diagonal(),
-                    (jc.angular.transpose()
-                        * Matrix::from_diagonal(&self.stiffness())
-                        * jc.angular)
-                        .diagonal(),
-                )
-            })
-            .collect()
+        self.jacobian(positions).map(|jc| {
+            Split::new(
+                (jc.linear.transpose() * diag(self.stiffness()) * jc.linear).diagonal(),
+                (jc.angular.transpose() * diag(self.stiffness()) * jc.angular).diagonal(),
+            )
+        })
     }
     fn dual_preconditioner(
         &self,
         positions: [Position; N],
         masses: [Mass; N],
     ) -> SMatrix<Real, V, V> {
-        let denom = Matrix::from_diagonal(&self.stiffness().map(Real::recip))
-            + self
-                .jacobian(positions)
-                .into_iter_fixed()
-                .zip(masses)
-                .map(|(jc, mass)| {
+        let denom = diag(self.stiffness().reciprocal())
+            + (self.jacobian(positions), masses)
+                .map(|jc, mass| {
                     jc.linear * mass.linear.inverse() * jc.linear.transpose()
                         + jc.angular * mass.angular.inverse() * jc.angular.transpose()
                 })
-                .into_iter()
-                .fold(SMatrix::zeros(), |acc, x| acc + x);
+                .sum();
         denom.try_inverse().unwrap()
     }
     fn dual_preconditioner_diag(
@@ -208,18 +191,14 @@ trait Constraint<const N: usize, const V: usize>: Debug {
         positions: [Position; N],
         masses: [Mass; N],
     ) -> SVector<Real, V> {
-        let denom = self.stiffness().map(Real::recip)
-            + self
-                .jacobian(positions)
-                .into_iter_fixed()
-                .zip(masses)
-                .map(|(jc, mass)| {
+        let denom = self.stiffness().reciprocal()
+            + (self.jacobian(positions), masses)
+                .map(|jc, mass| {
                     (jc.linear * mass.linear.inverse() * jc.linear.transpose()).diagonal()
                         + (jc.angular * mass.angular.inverse() * jc.angular.transpose()).diagonal()
                 })
-                .into_iter()
-                .fold(SVector::zeros(), |acc, x| acc + x);
-        denom.map(Real::recip)
+                .sum();
+        denom.reciprocal()
     }
 }
 
@@ -329,7 +308,6 @@ struct World {
     position: Vec<Position>,
     velocity: Vec<Velocity>,
     constraints: Vec<ConstraintBox>,
-    dt: Real,
     substeps: usize,
     contact_stiffness: Real,
 }
@@ -362,7 +340,6 @@ impl World {
             position,
             velocity,
             constraints,
-            dt,
             substeps,
             contact_stiffness,
         }

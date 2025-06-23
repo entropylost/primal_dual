@@ -245,14 +245,6 @@ impl<const R1: usize, const R2: usize, const C1: usize, const C2: usize>
         }
     }
 }
-impl<A: Reciprocal, B: Reciprocal> Split<A, B> {
-    pub fn recip(self) -> Self {
-        Split {
-            linear: self.linear.reciprocal(),
-            angular: self.angular.reciprocal(),
-        }
-    }
-}
 
 pub trait Invertible {
     fn inverse(self) -> Self;
@@ -287,5 +279,13 @@ impl Reciprocal for Real {
 impl<const R: usize, const C: usize> Reciprocal for SMatrix<Real, R, C> {
     fn reciprocal(self) -> Self {
         self.map(Real::recip)
+    }
+}
+impl<A: Reciprocal, B: Reciprocal> Reciprocal for Split<A, B> {
+    fn reciprocal(self) -> Self {
+        Split {
+            linear: self.linear.reciprocal(),
+            angular: self.angular.reciprocal(),
+        }
     }
 }
