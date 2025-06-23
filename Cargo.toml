@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 2d = []
+default = ["2d"]
 
 [dependencies]
 macroquad = "0.4.14"

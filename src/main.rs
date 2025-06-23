@@ -95,6 +95,9 @@ mod math {
 }
 use math::*;
 
+use crate::contact::Rod;
+use crate::solver::ScaledPrimalSolver;
+
 #[cfg(feature = "2d")]
 type Matrix2 = SMatrix<2, 2>;
 #[cfg(feature = "2d")]
@@ -480,50 +483,35 @@ impl World {
 async fn main() {
     request_new_screen_size(1000.0, 800.0);
 
-    let mass: Vec<Mass> = vec![f32::INFINITY, 1.0, 1.0, 1.0, 1.0, 5.0]
+    let mass: Vec<Mass> = vec![f32::INFINITY, 1.0, 1.0, 5.0]
         .into_iter()
         .map(|x| Split::new(x, MatrixW::from_diagonal_element(2.0 / 5.0 * x * 0.5 * 0.5)))
         .collect();
 
     let position: Vec<Position> = vec![
-        vector![0.0, 0.0, 0.0],
-        vector![2.0, 0.0, 0.0],
-        vector![4.0, 0.0, 0.0],
-        vector![6.0, 0.0, 0.0],
-        vector![8.0, 0.0, 0.0],
-        vector![8.0, -3.0, 0.4],
+        vector![0.0, 0.0],
+        vector![2.0, 0.0],
+        vector![4.0, 0.0],
+        vector![4.0, -3.0],
     ]
     .into_iter()
     .map(Split::from_linear)
     .collect();
     let velocity: Vec<Velocity> = vec![
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 0.0, 0.0], vector![0.0, 0.0, 0.0]),
-        Split::new(vector![0.0, 2.0, 0.0], vector![0.0, 0.0, 0.0]),
+        Split::new(vector![0.0, 0.0], vector![0.0]),
+        Split::new(vector![0.0, 0.0], vector![0.0]),
+        Split::new(vector![0.0, 0.0], vector![0.0]),
+        Split::new(vector![0.0, 2.0], vector![0.0]),
     ];
     let particles = mass.len();
     assert_eq!(particles, position.len());
     assert_eq!(particles, velocity.len());
 
-    let dt = 1.0 / 60.0;
-
-    let rod = CosseratRod::resting_state([position[0], position[1]]);
-    let stiffness = CosseratStiffness::new(0.5, 10000.0, 10000.0);
-    let ss = stiffness.stretch_shear(rod.length);
-    let bt = stiffness.bend_twist(rod.length);
+    let dt = 1.0 / 30.0;
 
     let constraints = vec![
-        ConstraintBox::new([0, 1], CosseratStretchShear { rod }, ss),
-        ConstraintBox::new([0, 1], CosseratBendTwist { rod }, bt),
-        ConstraintBox::new([1, 2], CosseratStretchShear { rod }, ss),
-        ConstraintBox::new([1, 2], CosseratBendTwist { rod }, bt),
-        ConstraintBox::new([2, 3], CosseratStretchShear { rod }, ss),
-        ConstraintBox::new([2, 3], CosseratBendTwist { rod }, bt),
-        ConstraintBox::new([3, 4], CosseratStretchShear { rod }, ss),
-        ConstraintBox::new([3, 4], CosseratBendTwist { rod }, bt),
+        ConstraintBox::new([0, 1], Rod { length: 2.0 }, Scalar::new(100.0)),
+        ConstraintBox::new([1, 2], Rod { length: 2.0 }, Scalar::new(1000000.0)),
     ];
 
     let mut worlds = [
@@ -531,28 +519,20 @@ async fn main() {
             Solvers::Primal(PrimalSolver {
                 iterations: 10,
                 constraint_step: 0.5,
-                diag_precond: false,
+                diag_precond: true,
             }),
-            1,
+            2,
             color::BLUE,
         ),
         (
-            Solvers::Primal(PrimalSolver {
-                iterations: 1,
+            Solvers::ScaledPrimal(ScaledPrimalSolver {
+                iterations: 10,
                 constraint_step: 0.5,
-                diag_precond: true,
+                starting_stiffness: None,
+                stiffness_scaling: None,
             }),
-            10,
+            2,
             color::RED,
-        ),
-        (
-            Solvers::Primal(PrimalSolver {
-                iterations: 3,
-                constraint_step: 0.5,
-                diag_precond: true,
-            }),
-            3,
-            color::GREEN,
         ),
         (
             Solvers::Dual(DualSolver {

@@ -4,30 +4,35 @@ use super::*;
 
 pub enum Solvers {
     Primal(PrimalSolver),
+    ScaledPrimal(ScaledPrimalSolver),
     Dual(DualSolver),
 }
 impl Solvers {
     pub fn name(&self) -> &'static str {
         match self {
             Solvers::Primal(_) => "Primal",
+            Solvers::ScaledPrimal(_) => "Scaled Primal",
             Solvers::Dual(_) => "Dual",
         }
     }
     pub fn iterations(&self) -> usize {
         match self {
             Solvers::Primal(solver) => solver.iterations,
+            Solvers::ScaledPrimal(solver) => solver.iterations,
             Solvers::Dual(solver) => solver.iterations,
         }
     }
     pub fn constraint_step(&self) -> Real {
         match self {
             Solvers::Primal(solver) => solver.constraint_step,
+            Solvers::ScaledPrimal(solver) => solver.constraint_step,
             Solvers::Dual(solver) => solver.constraint_step,
         }
     }
     pub fn diag_precond(&self) -> bool {
         match self {
             Solvers::Primal(solver) => solver.diag_precond,
+            Solvers::ScaledPrimal(_) => true,
             Solvers::Dual(solver) => solver.diag_precond,
         }
     }
@@ -44,6 +49,14 @@ impl Solver for Solvers {
     ) {
         match self {
             Solvers::Primal(solver) => solver.solve(
+                mass,
+                constraints,
+                last_position,
+                last_velocity,
+                position,
+                velocity,
+            ),
+            Solvers::ScaledPrimal(solver) => solver.solve(
                 mass,
                 constraints,
                 last_position,
@@ -215,6 +228,88 @@ impl Solver for DualSolver {
                     velocity[k].angular +=
                         mass[k].angular.inverse() * jacobian[j].angular.transpose() * &delta;
                 }
+            }
+            for i in 0..particles {
+                position[i] = last_position[i].step(velocity[i]);
+            }
+        }
+    }
+}
+
+pub struct ScaledPrimalSolver {
+    pub iterations: usize,
+    pub constraint_step: Real,
+    pub starting_stiffness: Option<Real>,
+    pub stiffness_scaling: Option<Real>,
+}
+impl Solver for ScaledPrimalSolver {
+    fn solve(
+        &mut self,
+        mass: &[Mass],
+        constraints: &[ConstraintBox],
+        last_position: &[Position],
+        last_velocity: &[Velocity],
+        position: &mut [Position],
+        velocity: &mut [Velocity],
+    ) {
+        let particles = mass.len();
+
+        let min_stiffness = constraints
+            .iter()
+            .map(|x| x.constraint.stiffness().min())
+            .reduce(Real::min)
+            .unwrap_or(1.0);
+        let max_stiffness = constraints
+            .iter()
+            .map(|x| x.constraint.stiffness().max())
+            .reduce(Real::max)
+            .unwrap_or(1.0);
+        let starting_stiffness = self.starting_stiffness.unwrap_or(min_stiffness);
+        let stiffness_scaling = self.stiffness_scaling.unwrap_or(
+            (max_stiffness / starting_stiffness).powf(((self.iterations - 1) as Real).recip()),
+        );
+
+        for iter in 0..self.iterations {
+            let max_stiffness = starting_stiffness * stiffness_scaling.powi(iter as i32);
+
+            let mut forces = vec![Force::default(); particles];
+            let mut hessians = mass
+                .iter()
+                .map(|m| Split::new(Vector::repeat(m.linear), m.angular.diagonal()))
+                .collect::<Vec<_>>();
+
+            for ConstraintBox {
+                targets,
+                constraint,
+            } in constraints
+            {
+                let mut constraint = constraint.clone();
+                let stiffness = constraint.stiffness().map(|x| x.min(max_stiffness));
+                constraint.stiffness_mut().copy_from(&stiffness);
+                let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
+
+                let force = constraint.force(&p);
+                for (i, &j) in targets.iter().enumerate() {
+                    forces[j] += force[i];
+                }
+
+                let hessian = constraint.hessian_diag(&p);
+                for (i, &j) in targets.iter().enumerate() {
+                    hessians[j] += hessian[i];
+                }
+            }
+            let step = (0..particles)
+                .map(|i| {
+                    let grad = mass[i] * (velocity[i] - last_velocity[i]) - forces[i];
+                    let precond = hessians[i].reciprocal();
+                    precond.component_mul(grad)
+                })
+                .collect::<Vec<_>>();
+            for (i, step) in step.into_iter().enumerate() {
+                if mass[i].linear.is_infinite() || mass[i].angular.iter().any(|x| x.is_infinite()) {
+                    continue;
+                }
+                velocity[i] -= self.constraint_step * step;
             }
             for i in 0..particles {
                 position[i] = last_position[i].step(velocity[i]);
