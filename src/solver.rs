@@ -189,26 +189,25 @@ impl Solver for DualSolver {
             .map(|x| DVector::zeros(x.constraint.dim_v()))
             .collect::<Vec<_>>();
         for _ in 0..self.iterations {
-            let last_dual_vars = dual_vars.clone();
             for (
-                i,
                 ConstraintBox {
                     targets,
                     constraint,
                 },
-            ) in constraints.iter().enumerate()
+                dual_var,
+            ) in constraints.iter().zip(dual_vars.iter_mut())
             {
                 let p = targets.iter().map(|&i| position[i]).collect::<Vec<_>>();
                 let m = targets.iter().map(|&i| mass[i]).collect::<Vec<_>>();
-                let dual_force = -constraint.value(&p)
-                    - last_dual_vars[i].component_div(&constraint.stiffness());
+                let dual_force =
+                    -constraint.value(&p) - dual_var.component_div(&constraint.stiffness());
                 let precond = if self.diag_precond {
                     DMatrix::from_diagonal(&constraint.dual_preconditioner_diag(&p, &m))
                 } else {
                     constraint.dual_preconditioner(&p, &m)
                 };
                 let delta = self.constraint_step * precond * dual_force;
-                dual_vars[i] += &delta;
+                *dual_var += &delta;
                 let jacobian = constraint.jacobian(&p);
                 for (j, &k) in targets.iter().enumerate() {
                     velocity[k].linear +=
