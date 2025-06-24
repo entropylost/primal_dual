@@ -26,7 +26,7 @@ mod solver;
 
 mod split;
 use contact::Contact;
-use cosserat::{CosseratBendTwist, CosseratRod, CosseratStiffness, CosseratStretchShear};
+use cosserat::*;
 use ext::*;
 use solver::{DualSolver, PrimalSolver, Solver, Solvers};
 use split::{Invertible, Reciprocal, Split};
