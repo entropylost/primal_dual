@@ -304,8 +304,8 @@ trait DynConstraint: Debug + DynClone {
     fn dual_preconditioner(&self, positions: &[Position], mass: &[Mass]) -> DMatrix;
     fn dual_preconditioner_diag(&self, positions: &[Position], mass: &[Mass]) -> DVector;
 
-    fn stiffness(&self) -> DVectorView<Real>;
-    fn stiffness_mut(&mut self) -> DVectorViewMut<Real>;
+    fn stiffness(&self) -> DVectorView<'_, Real>;
+    fn stiffness_mut(&mut self) -> DVectorViewMut<'_, Real>;
 }
 
 impl<const N: usize, const V: usize, X> DynConstraint for ConstraintWrapper<N, V, X>
@@ -370,10 +370,10 @@ where
         )
     }
 
-    fn stiffness(&self) -> DVectorView<Real> {
+    fn stiffness(&self) -> DVectorView<'_, Real> {
         self.1.as_view()
     }
-    fn stiffness_mut(&mut self) -> DVectorViewMut<Real> {
+    fn stiffness_mut(&mut self) -> DVectorViewMut<'_, Real> {
         self.1.as_view_mut()
     }
 }
@@ -510,29 +510,38 @@ async fn main() {
     let dt = 1.0 / 30.0;
 
     let constraints = vec![
-        ConstraintBox::new([0, 1], Rod { length: 2.0 }, Scalar::new(100.0)),
-        ConstraintBox::new([1, 2], Rod { length: 2.0 }, Scalar::new(1000000.0)),
+        ConstraintBox::new([0, 1], Rod { length: 2.0 }, Scalar::new(10.0)),
+        ConstraintBox::new([1, 2], Rod { length: 2.0 }, Scalar::new(100000.0)),
     ];
 
     let mut worlds = [
         (
             Solvers::Primal(PrimalSolver {
                 iterations: 10,
-                constraint_step: 0.5,
-                diag_precond: true,
+                constraint_step: 0.8,
+                diag_precond: false,
             }),
-            2,
+            10,
             color::BLUE,
         ),
         (
             Solvers::ScaledPrimal(ScaledPrimalSolver {
-                iterations: 10,
+                iterations: 100,
                 constraint_step: 0.5,
                 starting_stiffness: None,
                 stiffness_scaling: None,
             }),
-            2,
+            10,
             color::RED,
+        ),
+        (
+            Solvers::Dual(DualSolver {
+                iterations: 10,
+                constraint_step: 0.5,
+                diag_precond: false,
+            }),
+            10,
+            color::GREEN,
         ),
         (
             Solvers::Dual(DualSolver {
